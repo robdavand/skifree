@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SkiFree.js</title>
+<style>
+  html,body{margin:0;height:100%;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  canvas{image-rendering:pixelated;background:#f4f8ff;box-shadow:0 8px 40px rgba(0,0,0,.45)}
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+// ---------- setup ----------
+const BW=320, BH=240, SCALE=3;
+const cv=document.getElementById('screen');
+cv.width=BW*SCALE; cv.height=BH*SCALE;
+const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
+const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
+const g=buf.getContext('2d');
+
+// ---------- tuning ----------
+const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
+const PX_PER_M=8, YETI_AT=2000, CELL=48;
+
+// ---------- state ----------
+let gamestate='title';           // title | play | over
+let P, yeti, obstacles, cells, tracks, particles, style, nextYetiAt, keys={};
+let timeNow=0;
+
+function reset(){
+  P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0};
+  yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0};
+  obstacles=[]; cells=new Set(); tracks=[]; particles=[];
+  style=0; nextYetiAt=YETI_AT;
+}
+reset();
+
+// ---------- sound ----------
+let AC=null;
+function initAudio(){ if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(AC&&AC.state==='suspended')AC.resume(); }
+function beep(freq,dur,type,vol,when){
+  if(!AC)return;
+  const t=AC.currentTime+(when||0);
+  const o=AC.createOscillator(), ga=AC.createGain();
+  o.type=type||'square'; o.frequency.setValueAtTime(freq,t);
+  ga.gain.setValueAtTime(vol||0.12,t);
+  ga.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  o.connect(ga); ga.connect(AC.destination);
+  o.start(t); o.stop(t+dur);
+}
+const sndCrash =()=>{ beep(90,0.18,'square',0.15); beep(60,0.22,'sawtooth',0.12,0.05); };
+const sndJump  =()=>{ beep(300,0.08,'square',0.08); beep(450,0.10,'square',0.08,0.06); };
+const sndLand  =()=>{ beep(150,0.07,'square',0.08); };
+const sndMunch =()=>{ for(let i=0;i<4;i++) beep(70+i*8,0.12,'sawtooth',0.16,i*0.28); };
+const sndRoar  =()=>{ beep(55,0.6,'sawtooth',0.18); beep(48,0.6,'sawtooth',0.14,0.1); };
+
+// ---------- input ----------
+addEventListener('keydown',e=>{
+  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' '].includes(e.key)) e.preventDefault();
+  initAudio();
+  const k=e.key.toLowerCase();
+  keys[k]=true;
+  if(gamestate==='title'){ gamestate='play'; return; }
+  if(gamestate==='over'){ if(k===' '||k==='r'){ reset(); gamestate='play'; } return; }
+  if(P.state==='eaten') return;
+  if(e.key==='ArrowLeft')  P.dir=Math.max(P.dir-1,-2);
+  if(e.key==='ArrowRight') P.dir=Math.min(P.dir+1, 2);
+  if(e.key==='ArrowDown')  P.dir=0;
+});
+addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+
+// ---------- world spawning ----------
+function hash2(x,y){ let h=(x*73856093)^(y*19349663); h=(h^(h>>>13))>>>0; return h; }
+function spawnCell(cx,cy){
+  const key=cx+','+cy;
+  if(cells.has(key)) return;
+  cells.add(key);
+  const r=Math.random();
+  if(r>0.52) return;
+  const ox=cx*CELL+Math.random()*CELL, oy=cy*CELL+Math.random()*CELL;
+  // keep a clear zone around the skier's current spot (matters at start)
+  if(Math.hypot(ox-P.x,oy-P.y)<70) return;
+  let type;
+  const t=Math.random();
+  if(t<0.42) type='tree';
+  else if(t<0.52) type='deadtree';
+  else if(t<0.68) type='rock';
+  else if(t<0.80) type='stump';
+  else type='ramp';
+  obstacles.push({x:ox,y:oy,type});
+}
+function spawnAround(camX,camY){
+  const x0=Math.floor((camX-120)/CELL), x1=Math.floor((camX+BW+120)/CELL);
+  const y0=Math.floor((camY-60)/CELL),  y1=Math.floor((camY+BH+140)/CELL);
+  for(let cy=y0;cy<=y1;cy++) for(let cx=x0;cx<=x1;cx++) spawnCell(cx,cy);
+}
+
+// ---------- helpers ----------
+function puff(x,y,n,spread){
+  for(let i=0;i<n;i++){
+    particles.push({x:x+(Math.random()-0.5)*4, y:y+(Math.random()-0.5)*3,
+      vx:(Math.random()-0.5)*(spread||60), vy:-Math.random()*40-10, life:0.4+Math.random()*0.3});
+  }
+}
+function crash(){
+  P.state='crash'; P.crashT=1.3; P.speed=0; P.z=0; P.vz=0;
+  puff(P.x,P.y,12,90); sndCrash();
+}
+
+// ---------- update ----------
+const ANGLES=[-1.30,-0.55,0,0.55,1.30];
+function update(dt){
+  timeNow+=dt;
+  if(gamestate!=='play') return;
+
+  // --- player ---
+  if(P.state==='crash'){
+    P.crashT-=dt;
+    if(P.crashT<=0){ P.state='ski'; P.invT=1.0; P.speed=30; }
+  }else if(P.state==='ski'){
+    P.invT=Math.max(0,P.invT-dt);
+    const a=ANGLES[P.dir+2];
+    if(Math.abs(P.dir)===2){
+      P.speed+=(0-P.speed)*Math.min(1,3.5*dt);           // skid to a stop
+    }else{
+      const target=keys['f']?TURBOV:MAXV;
+      const rate=P.speed<target?0.55:2.5;
+      P.speed+=(target-P.speed)*Math.min(1,rate*dt);
+    }
+    const vx=Math.sin(a)*P.speed, vy=Math.cos(a)*P.speed;
+    P.x+=vx*dt; P.y+=vy*dt;
+
+    // air physics
+    if(P.z>0){
+      P.airT+=dt; style+=25*dt;
+      P.vz-=GRAV*dt; P.z+=P.vz*dt;
+      if(P.z<=0){ P.z=0; P.vz=0; style+=Math.floor(P.airT*30); P.airT=0; puff(P.x,P.y,5,50); sndLand(); }
+    }
+
+    // tracks
+    if(P.z<=0 && P.speed>10){
+      tracks.push({x:P.x,y:P.y});
+      if(tracks.length>200) tracks.shift();
+    }
+
+    // collisions
+    if(P.z<=0 && P.invT<=0){
+      for(const o of obstacles){
+        const dx=Math.abs(P.x-o.x), dy=P.y-o.y;
+        if(o.type==='ramp'){
+          if(dx<8 && dy>-3 && dy<3 && vy>40 && P.vz<=0){ P.vz=85+P.speed*0.45; P.z=0.1; P.airT=0; sndJump(); }
+        }else{
+          const hw={tree:4,deadtree:3,rock:5,stump:3}[o.type];
+          if(dx<hw && dy>-2 && dy<4){ crash(); break; }
+        }
+      }
+    }
+  }
+
+  const camX=P.x-BW/2, camY=P.y-70;
+  spawnAround(camX,camY);
+  obstacles=obstacles.filter(o=>o.y>camY-80 && Math.abs(o.x-P.x)<900);
+
+  // --- yeti ---
+  const meters=Math.max(0,P.y/PX_PER_M);
+  if(!yeti.active && meters>nextYetiAt){
+    yeti.active=true; yeti.state='chase'; yeti.t=0;
+    yeti.x=P.x+(Math.random()-0.5)*160; yeti.y=camY-24;
+    sndRoar();
+  }
+  if(yeti.active){
+    yeti.t+=dt;
+    if(yeti.state==='chase'){
+      const dx=P.x-yeti.x, dy=P.y-yeti.y, d=Math.hypot(dx,dy)||1;
+      const v=YETIV+Math.min(30,yeti.t*2);            // slowly gets angrier
+      yeti.x+=dx/d*v*dt; yeti.y+=dy/d*v*dt;
+      if(d>380){ yeti.active=false; nextYetiAt=meters+YETI_AT; }  // you escaped
+      else if(d<8 && P.state!=='eaten'){
+        P.state='eaten'; yeti.state='eat'; yeti.eatT=0;
+        yeti.x=P.x; yeti.y=P.y; sndMunch();
+      }
+    }else if(yeti.state==='eat'){
+      yeti.eatT+=dt;
+      if(yeti.eatT>2.4) gamestate='over';
+    }
+  }
+
+  // --- particles ---
+  for(const p of particles){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=120*dt; p.life-=dt; }
+  particles=particles.filter(p=>p.life>0);
+}
+
+// ---------- drawing ----------
+function drawTree(x,y){
+  g.fillStyle='#7a4a20'; g.fillRect(x-1,y-2,2,3);
+  g.fillStyle='#1c6b2a'; tri(x,y-2,14,8);
+  g.fillStyle='#2a8a3a'; tri(x,y-7,10,7); tri(x,y-11,7,6);
+  g.fillStyle='#ffffff'; g.fillRect(x-1,y-17,2,2);
+}
+function tri(cx,baseY,w,h){
+  g.beginPath(); g.moveTo(cx-w/2,baseY); g.lineTo(cx+w/2,baseY); g.lineTo(cx,baseY-h); g.closePath(); g.fill();
+}
+function drawDeadTree(x,y){
+  g.fillStyle='#8a6a4a';
+  g.fillRect(x-1,y-12,2,13);
+  g.fillRect(x-5,y-9,5,1); g.fillRect(x-5,y-11,1,2);
+  g.fillRect(x+1,y-7,5,1); g.fillRect(x+5,y-9,1,2);
+}
+function drawRock(x,y){
+  g.fillStyle='#9098a0'; g.fillRect(x-5,y-4,10,5); g.fillRect(x-3,y-6,6,2);
+  g.fillStyle='#b8c0c8'; g.fillRect(x-3,y-5,3,2);
+  g.fillStyle='#6a7078'; g.fillRect(x-5,y,10,1);
+}
+function drawStump(x,y){
+  g.fillStyle='#8a5a2a'; g.fillRect(x-3,y-4,6,5);
+  g.fillStyle='#c8a06a'; g.fillRect(x-3,y-5,6,2);
+  g.fillStyle='#5a3a1a'; g.fillRect(x-3,y,6,1);
+}
+function drawRamp(x,y){
+  g.fillStyle='#e8f0f8'; g.fillRect(x-8,y-3,16,3); g.fillRect(x-6,y-5,12,2);
+  g.fillStyle='#ffffff'; g.fillRect(x-5,y-6,10,1);
+  g.fillStyle='#90b0d0'; g.fillRect(x-8,y,16,1); g.fillRect(x-8,y-3,1,3); g.fillRect(x+7,y-3,1,3);
+}
+function drawSkier(x,y){
+  const yd=y-P.z;
+  if(P.z>0){ g.fillStyle='rgba(120,140,160,.45)'; g.fillRect(x-4,y-1,8,2); }
+  if(P.state==='eaten') return;
+  if(P.state==='crash'){
+    g.fillStyle='#e0b000';                       // crossed skis
+    g.save(); g.translate(x,yd-2);
+    g.rotate(0.5);  g.fillRect(-7,-1,14,2);
+    g.rotate(-1.0); g.fillRect(-7,-1,14,2);
+    g.restore();
+    g.fillStyle='#3050cc'; g.fillRect(x-3,yd-7,6,5);
+    g.fillStyle='#eab088'; g.fillRect(x-2,yd-10,4,3);
+    g.fillStyle='#cc3030'; g.fillRect(x-2,yd-12,4,2);
+    return;
+  }
+  const a=ANGLES[P.dir+2];
+  g.save(); g.translate(x,yd); g.rotate(-a);
+  const splay=P.z>0?0.45:0;
+  // skis
+  g.fillStyle='#e0b000';
+  g.save(); g.rotate(-splay); g.fillRect(-4,-1,2,9); g.restore();
+  g.save(); g.rotate( splay); g.fillRect( 2,-1,2,9); g.restore();
+  // poles
+  g.fillStyle='#707070'; g.fillRect(-6,-5,1,8); g.fillRect(5,-5,1,8);
+  // body
+  g.fillStyle='#3050cc'; g.fillRect(-3,-8,6,6);
+  if(P.z>0){ g.fillRect(-5,-11,2,4); g.fillRect(3,-11,2,4); }       // arms up
+  else     { g.fillRect(-5,-7,2,3);  g.fillRect(3,-7,2,3);  }
+  // head + hat
+  g.fillStyle='#eab088'; g.fillRect(-2,-12,4,4);
+  g.fillStyle='#cc3030'; g.fillRect(-2,-14,4,2);
+  g.restore();
+}
+function drawYeti(x,y){
+  const step=yeti.state==='chase'?Math.sin(yeti.t*14)*2:0;
+  // legs + feet
+  g.fillStyle='#b8c2d0';
+  g.fillRect(x-6,y-6+Math.max(0,step),5,6-Math.max(0,step));
+  g.fillRect(x+1,y-6+Math.max(0,-step),5,6-Math.max(0,-step));
+  // body
+  g.fillStyle='#dfe6ee'; g.fillRect(x-8,y-22,16,17);
+  g.fillStyle='#c8d2de'; g.fillRect(x-8,y-22,3,17);
+  // arms
+  const armY=yeti.state==='eat'?-26:-20;
+  g.fillStyle='#dfe6ee'; g.fillRect(x-12,y+armY,4,11); g.fillRect(x+8,y+armY,4,11);
+  // head
+  g.fillStyle='#dfe6ee'; g.fillRect(x-6,y-28,12,7);
+  // face
+  g.fillStyle='#101018'; g.fillRect(x-4,y-26,2,2); g.fillRect(x+2,y-26,2,2);
+  if(yeti.state==='eat'){
+    const chomp=(Math.floor(yeti.eatT*6)%2)*2;
+    g.fillStyle='#a02020'; g.fillRect(x-3,y-23,6,2+chomp);
+    g.fillStyle='#ffffff'; g.fillRect(x-3,y-23,1,1); g.fillRect(x+2,y-23,1,1);
+  }else{
+    g.fillStyle='#404858'; g.fillRect(x-2,y-23,4,1);
+  }
+  // claws
+  g.fillStyle='#404858';
+  g.fillRect(x-12,y+armY+11,4,1); g.fillRect(x+8,y+armY+11,4,1);
+}
+
+function draw(){
+  g.fillStyle='#f4f8ff'; g.fillRect(0,0,BW,BH);
+  const camX=Math.round(P.x-BW/2), camY=Math.round(P.y-70);
+
+  // snow speckle
+  g.fillStyle='#dde6ee';
+  const cx0=Math.floor(camX/CELL), cx1=Math.floor((camX+BW)/CELL);
+  const cy0=Math.floor(camY/CELL), cy1=Math.floor((camY+BH)/CELL);
+  for(let cy=cy0;cy<=cy1;cy++) for(let cx=cx0;cx<=cx1;cx++){
+    let h=hash2(cx,cy);
+    for(let i=0;i<3;i++){
+      h=(h*1103515245+12345)>>>0;
+      const px=cx*CELL+(h%CELL); h=(h*1103515245+12345)>>>0;
+      const py=cy*CELL+(h%CELL);
+      g.fillRect(px-camX,py-camY,1,1);
+    }
+  }
+
+  // ski tracks
+  g.fillStyle='#c4d2e0';
+  for(const t of tracks){
+    const tx=Math.round(t.x-camX), ty=Math.round(t.y-camY);
+    if(tx<-4||tx>BW+4||ty<-4||ty>BH+4) continue;
+    g.fillRect(tx-2,ty,1,1); g.fillRect(tx+2,ty,1,1);
+  }
+
+  // depth-sorted entities
+  const items=[];
+  for(const o of obstacles){
+    if(o.x-camX<-20||o.x-camX>BW+20||o.y-camY<-10||o.y-camY>BH+30) continue;
+    items.push(o);
+  }
+  items.push({x:P.x,y:P.y,type:'player'});
+  if(yeti.active) items.push({x:yeti.x,y:yeti.y,type:'yeti'});
+  items.sort((a,b)=>a.y-b.y);
+  for(const it of items){
+    const x=Math.round(it.x-camX), y=Math.round(it.y-camY);
+    switch(it.type){
+      case 'tree':     drawTree(x,y); break;
+      case 'deadtree': drawDeadTree(x,y); break;
+      case 'rock':     drawRock(x,y); break;
+      case 'stump':    drawStump(x,y); break;
+      case 'ramp':     drawRamp(x,y); break;
+      case 'player':   drawSkier(x,y); break;
+      case 'yeti':     drawYeti(x,y); break;
+    }
+  }
+
+  // particles
+  g.fillStyle='#ffffff';
+  for(const p of particles) g.fillRect(Math.round(p.x-camX),Math.round(p.y-camY),2,2);
+
+  // HUD
+  const meters=Math.floor(Math.max(0,P.y/PX_PER_M));
+  g.fillStyle='rgba(255,255,255,.92)'; g.fillRect(BW-96,3,93,32);
+  g.strokeStyle='#334'; g.strokeRect(BW-95.5,3.5,92,31);
+  g.fillStyle='#112'; g.font='8px monospace'; g.textBaseline='top'; g.textAlign='left';
+  g.fillText('dist  '+meters+' m', BW-90,6);
+  g.fillText('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15);
+  g.fillText('style '+Math.floor(style), BW-90,24);
+  if(keys['f']&&gamestate==='play'&&P.state==='ski'){
+    g.fillStyle='#c22'; g.fillText('TURBO!',BW-90,36);
+  }
+
+  if(gamestate==='title')      drawTitle();
+  else if(gamestate==='over')  drawOver(meters);
+
+  ctx.drawImage(buf,0,0,cv.width,cv.height);
+}
+function panel(w,h){
+  const x=(BW-w)/2, y=(BH-h)/2;
+  g.fillStyle='rgba(244,248,255,.96)'; g.fillRect(x,y,w,h);
+  g.strokeStyle='#334'; g.strokeRect(x+.5,y+.5,w-1,h-1); g.strokeRect(x+2.5,y+2.5,w-5,h-5);
+  return y;
+}
+function drawTitle(){
+  const y=panel(230,120);
+  g.textAlign='center'; g.textBaseline='top'; g.fillStyle='#112';
+  g.font='bold 16px monospace'; g.fillText('S K I F R E E', BW/2, y+12);
+  g.font='8px monospace';
+  g.fillText('← →  steer      ↓  straight down', BW/2, y+40);
+  g.fillText('hold F for turbo', BW/2, y+53);
+  g.fillText('hit ramps for style points', BW/2, y+66);
+  g.fillStyle='#a22';
+  g.fillText('beware the thing at 2000 m', BW/2, y+82);
+  g.fillStyle='#112';
+  if(Math.floor(timeNow*2)%2) g.fillText('- press any key to ski -', BW/2, y+100);
+  g.textAlign='left';
+}
+function drawOver(meters){
+  const y=panel(220,100);
+  g.textAlign='center'; g.textBaseline='top';
+  g.fillStyle='#a22'; g.font='bold 12px monospace';
+  g.fillText('THE YETI GOT YOU', BW/2, y+12);
+  g.fillStyle='#112'; g.font='8px monospace';
+  g.fillText('distance: '+meters+' m', BW/2, y+38);
+  g.fillText('style: '+Math.floor(style), BW/2, y+50);
+  if(Math.floor(timeNow*2)%2) g.fillText('- press SPACE to try again -', BW/2, y+74);
+  g.textAlign='left';
+}
+
+// ---------- main loop ----------
+let last=performance.now();
+function frame(now){
+  const dt=Math.min((now-last)/1000,0.05); last=now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// debug handle
+window.GAME={get P(){return P},get yeti(){return yeti},get obstacles(){return obstacles},
+  get state(){return gamestate},set state(s){gamestate=s},reset,
+  get style(){return style}};
+</script>
+</body>
+</html>
