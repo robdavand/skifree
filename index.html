@@ -45,9 +45,11 @@ const g=buf.getContext('2d');
 // resize cv (CSS size for layout, device-pixel size for a crisp nearest-neighbor scale).
 // The device-pixel scale MUST be a whole number, or nearest-neighbor scaling maps
 // source pixels to an uneven number of screen pixels and the image shimmers/blurs.
+let PXS=1;   // device pixels per buf pixel — used to place text at native resolution
 function fitScreen(){
   const dpr=Math.min(window.devicePixelRatio||1,2);
   const s=Math.max(1,Math.floor(Math.min(window.innerWidth*dpr/BW, window.innerHeight*dpr/BH)));
+  PXS=s;
   cv.width=BW*s;
   cv.height=BH*s;
   cv.style.width=(BW*s/dpr)+'px';
@@ -414,31 +416,46 @@ function draw(){
   g.fillStyle='#ffffff';
   for(const p of particles) g.fillRect(Math.round(p.x-camX),Math.round(p.y-camY),2,2);
 
-  // HUD
+  // HUD box background (text is drawn later, at full device resolution, for crisp anti-aliasing
+  // instead of blurry nearest-neighbor-scaled glyphs)
   const meters=Math.floor(Math.max(0,P.y/PX_PER_M));
   g.fillStyle='rgba(255,255,255,.92)'; g.fillRect(BW-96,3,93,32);
   g.strokeStyle='#334'; g.strokeRect(BW-95.5,3.5,92,31);
-  g.fillStyle='#112'; g.font='8px monospace'; g.textBaseline='top'; g.textAlign='left';
-  g.fillText('dist  '+meters+' m', BW-90,6);
-  g.fillText('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15);
-  g.fillText('style '+Math.floor(style), BW-90,24);
-  if(keys['f']&&gamestate==='play'&&P.state==='ski'){
-    g.fillStyle='#c22'; g.fillText('TURBO!',BW-90,36);
-  }
 
-  // desktop control hint (touch users have on-screen buttons instead)
-  if(!touchMode && gamestate!=='title'){
+  // desktop control hint box background (touch users have on-screen buttons instead)
+  const showHint=!touchMode && gamestate!=='title';
+  if(showHint){
     g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-24,116,21);
     g.strokeStyle='#334'; g.strokeRect(3.5,BH-23.5,115,20);
-    g.fillStyle='#112'; g.font='7px monospace'; g.textBaseline='top'; g.textAlign='left';
-    g.fillText('← → steer   ↓ down',6,BH-21);
-    g.fillText('hold F for turbo',6,BH-12);
   }
 
-  if(gamestate==='title')      drawTitle();
-  else if(gamestate==='over')  drawOver(meters);
+  let titleY=0, overY=0;
+  if(gamestate==='title')      titleY=panel(230,120);
+  else if(gamestate==='over')  overY=panel(220,100);
 
   ctx.drawImage(buf,0,0,cv.width,cv.height);
+
+  // ---- text, drawn straight onto the full-resolution canvas for crisp anti-aliasing ----
+  ctext('dist  '+meters+' m', BW-90,6,8);
+  ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15,8);
+  ctext('style '+Math.floor(style), BW-90,24,8);
+  if(keys['f']&&gamestate==='play'&&P.state==='ski'){
+    ctext('TURBO!', BW-90,36,8,{color:'#c22'});
+  }
+  if(showHint){
+    ctext('← → steer   ↓ down',6,BH-21,7);
+    ctext('hold F for turbo',6,BH-12,7);
+  }
+  if(gamestate==='title')      drawTitleText(titleY);
+  else if(gamestate==='over')  drawOverText(overY,meters);
+}
+function ctext(str,x,y,size,opts){
+  opts=opts||{};
+  ctx.fillStyle=opts.color||'#112';
+  ctx.font=(opts.bold?'bold ':'')+Math.round(size*PXS)+'px monospace';
+  ctx.textAlign=opts.align||'left';
+  ctx.textBaseline='top';
+  ctx.fillText(str, Math.round(x*PXS), Math.round(y*PXS));
 }
 function panel(w,h){
   const x=(BW-w)/2, y=(BH-h)/2;
@@ -446,30 +463,19 @@ function panel(w,h){
   g.strokeStyle='#334'; g.strokeRect(x+.5,y+.5,w-1,h-1); g.strokeRect(x+2.5,y+2.5,w-5,h-5);
   return y;
 }
-function drawTitle(){
-  const y=panel(230,120);
-  g.textAlign='center'; g.textBaseline='top'; g.fillStyle='#112';
-  g.font='bold 16px monospace'; g.fillText('S K I F R E E', BW/2, y+12);
-  g.font='8px monospace';
-  g.fillText('← →  steer      ↓  straight down', BW/2, y+40);
-  g.fillText('hold F for turbo', BW/2, y+53);
-  g.fillText('hit ramps for style points', BW/2, y+66);
-  g.fillStyle='#a22';
-  g.fillText('beware the thing at 2000 m', BW/2, y+82);
-  g.fillStyle='#112';
-  if(Math.floor(timeNow*2)%2) g.fillText('- press any key to ski -', BW/2, y+100);
-  g.textAlign='left';
+function drawTitleText(y){
+  ctext('S K I F R E E', BW/2, y+12, 16, {align:'center',bold:true});
+  ctext('← →  steer      ↓  straight down', BW/2, y+40, 8, {align:'center'});
+  ctext('hold F for turbo', BW/2, y+53, 8, {align:'center'});
+  ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
+  ctext('beware the thing at 2000 m', BW/2, y+82, 8, {align:'center',color:'#a22'});
+  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+100, 8, {align:'center'});
 }
-function drawOver(meters){
-  const y=panel(220,100);
-  g.textAlign='center'; g.textBaseline='top';
-  g.fillStyle='#a22'; g.font='bold 12px monospace';
-  g.fillText('THE YETI GOT YOU', BW/2, y+12);
-  g.fillStyle='#112'; g.font='8px monospace';
-  g.fillText('distance: '+meters+' m', BW/2, y+38);
-  g.fillText('style: '+Math.floor(style), BW/2, y+50);
-  if(Math.floor(timeNow*2)%2) g.fillText('- press SPACE to try again -', BW/2, y+74);
-  g.textAlign='left';
+function drawOverText(y,meters){
+  ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
+  ctext('distance: '+meters+' m', BW/2, y+38, 8, {align:'center'});
+  ctext('style: '+Math.floor(style), BW/2, y+50, 8, {align:'center'});
+  if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+74, 8, {align:'center'});
 }
 
 // ---------- main loop ----------
