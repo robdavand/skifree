@@ -7,7 +7,7 @@
 <title>SkiFree.js</title>
 <style>
   html,body{margin:0;height:100%;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;overscroll-behavior:none}
-  canvas{image-rendering:pixelated;background:#f4f8ff;box-shadow:0 8px 40px rgba(0,0,0,.45);touch-action:none}
+  canvas{image-rendering:pixelated;background:#f4f8ff;touch-action:none}
   #wrap{position:relative;display:inline-block;line-height:0}
   #touchui{position:absolute;left:0;right:0;bottom:0;display:none;justify-content:space-between;align-items:flex-end;padding:3%;pointer-events:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
   #touchui.show{display:flex}
@@ -35,7 +35,10 @@
 <script>
 "use strict";
 // ---------- setup ----------
-const BW=320, BH=240;
+const BH=240;
+let BW=320;   // recomputed responsively in fitScreen() to match the window's aspect ratio
+const MIN_BW=320, MAX_BW=900;   // never narrower than the original 4:3 view; upper bound is
+                                 // just a sanity cap, not a deliberate limit on widescreen fill
 const cv=document.getElementById('screen');
 const ctx=cv.getContext('2d');
 const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
@@ -52,6 +55,11 @@ function fitScreen(){
   // would make the browser itself rescale the canvas by a non-integer factor to fill the CSS
   // box at the real dpr, reintroducing the exact blur this whole scheme exists to avoid.
   const dpr=window.devicePixelRatio||1;
+  // widen the visible world to match the window's aspect ratio instead of letterboxing a
+  // fixed 4:3 view - this fills widescreen browser windows edge to edge with more slope,
+  // rather than showing the same fixed view with blue bars down the sides.
+  BW=Math.round(Math.min(MAX_BW,Math.max(MIN_BW, BH*(window.innerWidth/window.innerHeight))));
+  buf.width=BW; buf.height=BH;
   const s=Math.max(1,Math.floor(Math.min(window.innerWidth*dpr/BW, window.innerHeight*dpr/BH)));
   PXS=s;
   cv.width=BW*s;
