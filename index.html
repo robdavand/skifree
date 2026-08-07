@@ -67,6 +67,7 @@ addEventListener('orientationchange',fitScreen);
 // ---------- tuning ----------
 const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
 const PX_PER_M=8, YETI_AT=2000, CELL=48;
+const SPIN_RATE=7.5, FLIP_RATE=6.0;   // radians/sec while holding a trick direction in the air
 
 // ---------- state ----------
 let gamestate='title';           // title | play | over
@@ -74,7 +75,7 @@ let P, yeti, obstacles, cells, tracks, particles, style, nextYetiAt, keys={};
 let timeNow=0;
 
 function reset(){
-  P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0};
+  P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0,spin:0,flip:0};
   yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0};
   obstacles=[]; cells=new Set(); tracks=[]; particles=[];
   style=0; nextYetiAt=YETI_AT;
@@ -99,6 +100,7 @@ const sndJump  =()=>{ beep(300,0.08,'square',0.08); beep(450,0.10,'square',0.08,
 const sndLand  =()=>{ beep(150,0.07,'square',0.08); };
 const sndMunch =()=>{ for(let i=0;i<4;i++) beep(70+i*8,0.12,'sawtooth',0.16,i*0.28); };
 const sndRoar  =()=>{ beep(55,0.6,'sawtooth',0.18); beep(48,0.6,'sawtooth',0.14,0.1); };
+const sndTrick =()=>{ beep(500,0.08,'square',0.12); beep(700,0.09,'square',0.12,0.07); beep(950,0.11,'square',0.12,0.14); };
 
 // ---------- input ----------
 addEventListener('keydown',e=>{
@@ -109,6 +111,7 @@ addEventListener('keydown',e=>{
   if(gamestate==='title'){ gamestate='play'; return; }
   if(gamestate==='over'){ if(k===' '||k==='r'){ reset(); gamestate='play'; } return; }
   if(P.state==='eaten') return;
+  if(P.z>0) return;   // airborne: arrows drive spin/flip tricks instead (handled continuously in update())
   if(e.key==='ArrowLeft')  P.dir=Math.max(P.dir-1,-2);
   if(e.key==='ArrowRight') P.dir=Math.min(P.dir+1, 2);
   if(e.key==='ArrowDown')  P.dir=0;
@@ -133,9 +136,16 @@ function gateTap(){                  // returns true if the tap only advanced ti
   if(gamestate==='over'){ reset(); gamestate='play'; return true; }
   return false;
 }
-function stepLeft(){ if(P.state!=='eaten') P.dir=Math.max(P.dir-1,-2); }
-function stepRight(){ if(P.state!=='eaten') P.dir=Math.min(P.dir+1,2); }
-function stepDown(){ if(P.state!=='eaten') P.dir=0; }
+function stepLeft(){ if(P.state!=='eaten' && P.z<=0) P.dir=Math.max(P.dir-1,-2); }
+function stepRight(){ if(P.state!=='eaten' && P.z<=0) P.dir=Math.min(P.dir+1,2); }
+function stepDown(){ if(P.state!=='eaten' && P.z<=0) P.dir=0; }
+function bindHeld(el,keyname){        // mirrors a button into keys{} so air tricks can read it like a keyboard hold
+  const set=v=>e=>{ e.preventDefault(); keys[keyname]=v; };
+  el.addEventListener('pointerdown',set(true));
+  el.addEventListener('pointerup',set(false));
+  el.addEventListener('pointerleave',set(false));
+  el.addEventListener('pointercancel',set(false));
+}
 function holdButton(el,fn){
   let iv=null,to=null;
   const start=e=>{ e.preventDefault(); if(gateTap())return; fn();
@@ -149,6 +159,9 @@ function holdButton(el,fn){
 holdButton(document.getElementById('leftbtn'),stepLeft);
 holdButton(document.getElementById('rightbtn'),stepRight);
 document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; stepDown(); });
+bindHeld(document.getElementById('leftbtn'),'arrowleft');
+bindHeld(document.getElementById('rightbtn'),'arrowright');
+bindHeld(document.getElementById('downbtn'),'arrowdown');
 document.getElementById('turbobtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; keys['f']=true; });
 document.getElementById('turbobtn').addEventListener('pointerup',e=>{ e.preventDefault(); keys['f']=false; });
 document.getElementById('turbobtn').addEventListener('pointerleave',e=>{ e.preventDefault(); keys['f']=false; });
@@ -206,12 +219,14 @@ function update(dt){
   }else if(P.state==='ski'){
     P.invT=Math.max(0,P.invT-dt);
     const a=ANGLES[P.dir+2];
-    if(Math.abs(P.dir)===2){
-      P.speed+=(0-P.speed)*Math.min(1,3.5*dt);           // skid to a stop
-    }else{
-      const target=keys['f']?TURBOV:MAXV;
-      const rate=P.speed<target?0.55:2.5;
-      P.speed+=(target-P.speed)*Math.min(1,rate*dt);
+    if(P.z<=0){                        // steering/speed only change with your feet on the snow
+      if(Math.abs(P.dir)===2){
+        P.speed+=(0-P.speed)*Math.min(1,3.5*dt);          // skid to a stop
+      }else{
+        const target=keys['f']?TURBOV:MAXV;
+        const rate=P.speed<target?0.55:2.5;
+        P.speed+=(target-P.speed)*Math.min(1,rate*dt);
+      }
     }
     const vx=Math.sin(a)*P.speed, vy=Math.cos(a)*P.speed;
     P.x+=vx*dt; P.y+=vy*dt;
@@ -219,8 +234,20 @@ function update(dt){
     // air physics
     if(P.z>0){
       P.airT+=dt; style+=25*dt;
+      if(keys['arrowleft'])  P.spin-=SPIN_RATE*dt;
+      if(keys['arrowright']) P.spin+=SPIN_RATE*dt;
+      if(keys['arrowup'])    P.flip-=FLIP_RATE*dt;
+      if(keys['arrowdown'])  P.flip+=FLIP_RATE*dt;
       P.vz-=GRAV*dt; P.z+=P.vz*dt;
-      if(P.z<=0){ P.z=0; P.vz=0; style+=Math.floor(P.airT*30); P.airT=0; puff(P.x,P.y,5,50); sndLand(); }
+      if(P.z<=0){
+        P.z=0; P.vz=0;
+        const spins=Math.floor(Math.abs(P.spin)/(Math.PI*2));
+        const flips=Math.floor(Math.abs(P.flip)/(Math.PI*2));
+        style+=Math.floor(P.airT*30)+spins*120+flips*160;
+        if(spins||flips) sndTrick();
+        P.spin=0; P.flip=0; P.airT=0;
+        puff(P.x,P.y,5,50); sndLand();
+      }
     }
 
     // tracks
@@ -302,9 +329,10 @@ function drawStump(x,y){
   g.fillStyle='#c8a06a'; g.fillRect(x-3,y-5,6,2);
   g.fillStyle='#5a3a1a'; g.fillRect(x-3,y,6,1);
 }
+const RAMP_COLORS=['#e03030','#f07020','#f0c020','#60c040','#20a0a0','#3070e0','#7040c0','#c040a0'];
 function drawRamp(x,y){
-  g.fillStyle='#e8f0f8'; g.fillRect(x-8,y-3,16,3); g.fillRect(x-6,y-5,12,2);
-  g.fillStyle='#ffffff'; g.fillRect(x-5,y-6,10,1);
+  for(let i=0;i<RAMP_COLORS.length;i++){ g.fillStyle=RAMP_COLORS[i]; g.fillRect(x-8+i*2,y-3,2,3); }
+  g.fillStyle='#ffffff'; g.fillRect(x-6,y-5,12,2);
   g.fillStyle='#90b0d0'; g.fillRect(x-8,y,16,1); g.fillRect(x-8,y-3,1,3); g.fillRect(x+7,y-3,1,3);
 }
 function drawSkier(x,y){
@@ -324,6 +352,7 @@ function drawSkier(x,y){
   }
   const a=ANGLES[P.dir+2];
   g.save(); g.translate(x,yd); g.rotate(-a);
+  if(P.z>0){ g.rotate(P.spin); g.scale(1,Math.cos(P.flip)); }
   const splay=P.z>0?0.45:0;
   // skis
   g.fillStyle='#e0b000';
@@ -429,12 +458,12 @@ function draw(){
   // desktop control hint box background (touch users have on-screen buttons instead)
   const showHint=!touchMode && gamestate!=='title';
   if(showHint){
-    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-24,116,21);
-    g.strokeStyle='#334'; g.strokeRect(3.5,BH-23.5,115,20);
+    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-33,132,30);
+    g.strokeStyle='#334'; g.strokeRect(3.5,BH-32.5,131,29);
   }
 
   let titleY=0, overY=0;
-  if(gamestate==='title')      titleY=panel(230,120);
+  if(gamestate==='title')      titleY=panel(230,134);
   else if(gamestate==='over')  overY=panel(220,100);
 
   ctx.drawImage(buf,0,0,cv.width,cv.height);
@@ -447,8 +476,9 @@ function draw(){
     ctext('TURBO!', BW-90,36,8,{color:'#c22'});
   }
   if(showHint){
-    ctext('← → steer   ↓ down',6,BH-21,7);
-    ctext('hold F for turbo',6,BH-12,7);
+    ctext('← → steer   ↓ down',6,BH-30,7);
+    ctext('hold F for turbo',6,BH-21,7);
+    ctext('in air: ← → spin  ↑ ↓ flip',6,BH-12,7);
   }
   if(gamestate==='title')      drawTitleText(titleY);
   else if(gamestate==='over')  drawOverText(overY,meters);
@@ -472,8 +502,9 @@ function drawTitleText(y){
   ctext('← →  steer      ↓  straight down', BW/2, y+40, 8, {align:'center'});
   ctext('hold F for turbo', BW/2, y+53, 8, {align:'center'});
   ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
-  ctext('beware the thing at 2000 m', BW/2, y+82, 8, {align:'center',color:'#a22'});
-  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+100, 8, {align:'center'});
+  ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+79, 8, {align:'center'});
+  ctext('beware the thing at 2000 m', BW/2, y+95, 8, {align:'center',color:'#a22'});
+  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+113, 8, {align:'center'});
 }
 function drawOverText(y,meters){
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
