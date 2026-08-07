@@ -6,7 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <title>SkiFree.js</title>
 <style>
-  html,body{margin:0;height:100%;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;overscroll-behavior:none}
+  html,body{margin:0;height:100vh;height:100dvh;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;overscroll-behavior:none}
   canvas{image-rendering:pixelated;background:#f4f8ff;touch-action:none}
   #wrap{position:relative;display:inline-block;line-height:0}
   #touchui{position:absolute;left:0;right:0;bottom:0;display:none;justify-content:space-between;align-items:flex-end;padding:3%;pointer-events:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
@@ -58,6 +58,12 @@ function fitScreen(){
   // would make the browser itself rescale the canvas by a non-integer factor to fill the CSS
   // box at the real dpr, reintroducing the exact blur this whole scheme exists to avoid.
   const dpr=window.devicePixelRatio||1;
+  // Prefer the visualViewport over window.innerWidth/Height: on mobile browsers the latter can
+  // include area hidden behind a collapsing address bar or on-screen keyboard, sizing the
+  // canvas taller than what's actually visible and pushing content (like the title panel)
+  // below the real fold even though the numbers "fit".
+  const vw=window.visualViewport;
+  const viewW=vw?vw.width:window.innerWidth, viewH=vw?vw.height:window.innerHeight;
   // Pick ONE integer scale s (device px per world px) up front, then derive BOTH BW and BH
   // from the window's actual device-pixel size divided by that same s. Deriving BW from a
   // continuous aspect-ratio ratio and *separately* flooring s (the previous approach) wastes
@@ -65,10 +71,10 @@ function fitScreen(){
   // (e.g. an ideal scale of 3.97 floors to 3, discarding ~25% of the window) - that's the big
   // blue margin. Rounding both dimensions against one fixed s bounds the leftover gap to at
   // most half a scale-step per axis: a couple of pixels, not a quarter of the screen.
-  const s=Math.max(1,Math.round(window.innerHeight*dpr/240));
+  const s=Math.max(1,Math.round(viewH*dpr/240));
   PXS=s;
-  BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(window.innerWidth*dpr/s)));
-  BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(window.innerHeight*dpr/s)));
+  BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewW*dpr/s)));
+  BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewH*dpr/s)));
   buf.width=BW; buf.height=BH;
   cv.width=BW*s;
   cv.height=BH*s;
@@ -79,6 +85,10 @@ function fitScreen(){
 fitScreen();
 addEventListener('resize',fitScreen);
 addEventListener('orientationchange',fitScreen);
+if(window.visualViewport){
+  visualViewport.addEventListener('resize',fitScreen);
+  visualViewport.addEventListener('scroll',fitScreen);
+}
 
 // ---------- tuning ----------
 const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
@@ -512,15 +522,22 @@ function draw(){
   else if(gamestate==='over')   drawOverText(overY,meters);
   else if(gamestate==='paused') drawPausedText(pauseY);
 }
+// menus/HUD text were laid out assuming a ~320-wide world; on a narrow phone BW can be far
+// smaller than that (the world now shrinks to whatever width fills the screen at a normal
+// zoom level, see fitScreen()), so shrink UI text proportionally below that reference width
+// instead of letting it run past the edges of a narrower screen. No effect once BW>=320
+// (true on every desktop/landscape window verified so far).
+function uiScale(){ return Math.min(1,BW/320); }
 function ctext(str,x,y,size,opts){
   opts=opts||{};
   ctx.fillStyle=opts.color||'#112';
-  ctx.font=(opts.bold?'bold ':'')+Math.round(size*PXS)+'px monospace';
+  ctx.font=(opts.bold?'bold ':'')+Math.max(1,Math.round(size*PXS*uiScale()))+'px monospace';
   ctx.textAlign=opts.align||'left';
   ctx.textBaseline='top';
   ctx.fillText(str, Math.round(x*PXS), Math.round(y*PXS));
 }
 function panel(w,h){
+  w=Math.min(w,BW-12); h=Math.min(h,BH-12);   // never wider/taller than the visible world
   const x=(BW-w)/2, y=(BH-h)/2;
   g.fillStyle='rgba(244,248,255,.96)'; g.fillRect(x,y,w,h);
   g.strokeStyle='#334'; g.strokeRect(x+.5,y+.5,w-1,h-1); g.strokeRect(x+2.5,y+2.5,w-5,h-5);
