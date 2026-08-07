@@ -42,14 +42,16 @@ const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
 const g=buf.getContext('2d');
 
 // responsive: buf is always drawn to fill cv's actual pixel size, so we just
-// resize cv (CSS size for layout, device-pixel size for a crisp nearest-neighbor scale)
+// resize cv (CSS size for layout, device-pixel size for a crisp nearest-neighbor scale).
+// The device-pixel scale MUST be a whole number, or nearest-neighbor scaling maps
+// source pixels to an uneven number of screen pixels and the image shimmers/blurs.
 function fitScreen(){
   const dpr=Math.min(window.devicePixelRatio||1,2);
-  const scale=Math.max(1,Math.min(window.innerWidth/BW, window.innerHeight/BH));
-  cv.style.width=Math.floor(BW*scale)+'px';
-  cv.style.height=Math.floor(BH*scale)+'px';
-  cv.width=Math.round(BW*scale*dpr);
-  cv.height=Math.round(BH*scale*dpr);
+  const s=Math.max(1,Math.floor(Math.min(window.innerWidth*dpr/BW, window.innerHeight*dpr/BH)));
+  cv.width=BW*s;
+  cv.height=BH*s;
+  cv.style.width=(BW*s/dpr)+'px';
+  cv.style.height=(BH*s/dpr)+'px';
   ctx.imageSmoothingEnabled=false;
 }
 fitScreen();
