@@ -111,9 +111,11 @@ addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
 
 // ---------- touch controls ----------
 const touchui=document.getElementById('touchui');
+let touchMode=false;
 function checkTouch(){
   if(matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints>0){
     touchui.classList.add('show');
+    touchMode=true;
   }
 }
 checkTouch();
@@ -422,6 +424,15 @@ function draw(){
   g.fillText('style '+Math.floor(style), BW-90,24);
   if(keys['f']&&gamestate==='play'&&P.state==='ski'){
     g.fillStyle='#c22'; g.fillText('TURBO!',BW-90,36);
+  }
+
+  // desktop control hint (touch users have on-screen buttons instead)
+  if(!touchMode && gamestate!=='title'){
+    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-24,116,21);
+    g.strokeStyle='#334'; g.strokeRect(3.5,BH-23.5,115,20);
+    g.fillStyle='#112'; g.font='7px monospace'; g.textBaseline='top'; g.textAlign='left';
+    g.fillText('← → steer   ↓ down',6,BH-21);
+    g.fillText('hold F for turbo',6,BH-12);
   }
 
   if(gamestate==='title')      drawTitle();
