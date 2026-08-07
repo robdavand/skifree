@@ -100,11 +100,28 @@ let gamestate='title';           // title | play | over
 let P, yeti, obstacles, cells, tracks, particles, style, nextYetiAt, keys={};
 let timeNow=0;
 
+// ---------- local high score (this device only, no server) ----------
+let best={dist:0,style:0}, newBestDist=false, newBestStyle=false;
+try{
+  const saved=JSON.parse(localStorage.getItem('skifree_best'));
+  if(saved) best={dist:saved.dist||0,style:saved.style||0};
+}catch(e){}
+function checkBest(meters,finalStyle){
+  newBestDist=meters>best.dist;
+  newBestStyle=finalStyle>best.style;
+  if(newBestDist) best.dist=meters;
+  if(newBestStyle) best.style=finalStyle;
+  if(newBestDist||newBestStyle){
+    try{ localStorage.setItem('skifree_best',JSON.stringify(best)); }catch(e){}
+  }
+}
+
 function reset(){
   P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0,spin:0,flip:0};
   yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0};
   obstacles=[]; cells=new Set(); tracks=[]; particles=[];
   style=0; nextYetiAt=YETI_AT;
+  newBestDist=false; newBestStyle=false;
 }
 reset();
 
@@ -326,7 +343,10 @@ function update(dt){
       }
     }else if(yeti.state==='eat'){
       yeti.eatT+=dt;
-      if(yeti.eatT>2.4) gamestate='over';
+      if(yeti.eatT>2.4 && gamestate!=='over'){
+        gamestate='over';
+        checkBest(Math.floor(meters),Math.floor(style));
+      }
     }
   }
 
@@ -545,6 +565,8 @@ function panel(w,h){
 }
 function drawTitleText(y){
   ctext('S K I F R E E', BW/2, y+12, 16, {align:'center',bold:true});
+  ctext(best.dist>0 ? ('your best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style)) : 'no runs yet - this is your first!',
+    BW/2, y+27, 8, {align:'center',color:'#458'});
   ctext('← →  steer      ↓  straight down', BW/2, y+40, 8, {align:'center'});
   ctext('hold F for turbo', BW/2, y+53, 8, {align:'center'});
   ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
@@ -554,9 +576,12 @@ function drawTitleText(y){
 }
 function drawOverText(y,meters){
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
-  ctext('distance: '+meters+' m', BW/2, y+38, 8, {align:'center'});
-  ctext('style: '+Math.floor(style), BW/2, y+50, 8, {align:'center'});
-  if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+74, 8, {align:'center'});
+  ctext('distance: '+meters+' m'+(newBestDist?'  NEW BEST!':''), BW/2, y+38, 8,
+    {align:'center',color:newBestDist?'#1a8a3a':'#112'});
+  ctext('style: '+Math.floor(style)+(newBestStyle?'  NEW BEST!':''), BW/2, y+50, 8,
+    {align:'center',color:newBestStyle?'#1a8a3a':'#112'});
+  ctext('best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style), BW/2, y+64, 8, {align:'center'});
+  if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+82, 8, {align:'center'});
 }
 function drawPausedText(y){
   ctext('PAUSED', BW/2, y+16, 14, {align:'center',bold:true});
