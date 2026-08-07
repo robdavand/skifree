@@ -4,6 +4,8 @@ A single-file HTML5 canvas clone of the classic 1991 Windows game *SkiFree*. Ski
 
 Everything lives in [index.html](index.html): no build step, no dependencies, just an inline `<script>` driving a `<canvas>`.
 
+**Play it here: https://robdavand.github.io/skifree/**
+
 ## Play
 
 Open `index.html` directly in a browser, or serve the directory locally:
