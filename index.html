@@ -66,7 +66,7 @@ addEventListener('orientationchange',fitScreen);
 
 // ---------- tuning ----------
 const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
-const PX_PER_M=8, YETI_AT=2000, CELL=48;
+const PX_PER_M=8, YETI_AT=1000, CELL=48;
 const SPIN_RATE=7.5, FLIP_RATE=6.0;   // radians/sec while holding a trick direction in the air
 
 // ---------- state ----------
@@ -473,7 +473,7 @@ function draw(){
   }
 
   let titleY=0, overY=0, pauseY=0;
-  if(gamestate==='title')       titleY=panel(230,150);
+  if(gamestate==='title')       titleY=panel(230,134);
   else if(gamestate==='over')   overY=panel(220,100);
   else if(gamestate==='paused') pauseY=panel(190,80);
 
@@ -516,9 +516,8 @@ function drawTitleText(y){
   ctext('hold F for turbo', BW/2, y+53, 8, {align:'center'});
   ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
   ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+79, 8, {align:'center'});
-  ctext('beware the thing at 2000 m', BW/2, y+95, 8, {align:'center',color:'#a22'});
-  ctext('Esc to pause anytime', BW/2, y+111, 8, {align:'center'});
-  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+129, 8, {align:'center'});
+  ctext('Esc to pause anytime', BW/2, y+95, 8, {align:'center'});
+  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+113, 8, {align:'center'});
 }
 function drawOverText(y,meters){
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
