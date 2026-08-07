@@ -2,23 +2,59 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
 <title>SkiFree.js</title>
 <style>
-  html,body{margin:0;height:100%;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden}
-  canvas{image-rendering:pixelated;background:#f4f8ff;box-shadow:0 8px 40px rgba(0,0,0,.45)}
+  html,body{margin:0;height:100%;background:#4a6a8a;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;overscroll-behavior:none}
+  canvas{image-rendering:pixelated;background:#f4f8ff;box-shadow:0 8px 40px rgba(0,0,0,.45);touch-action:none}
+  #wrap{position:relative;display:inline-block;line-height:0}
+  #touchui{position:absolute;left:0;right:0;bottom:0;display:none;justify-content:space-between;align-items:flex-end;padding:3%;pointer-events:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+  #touchui.show{display:flex}
+  #touchui .grp{display:flex;gap:10px;pointer-events:none}
+  .tbtn{pointer-events:auto;touch-action:none;width:15vmin;height:15vmin;min-width:48px;min-height:48px;max-width:64px;max-height:64px;border-radius:50%;background:rgba(255,255,255,.20);border:2px solid rgba(255,255,255,.55);color:#fff;font:bold 20px sans-serif;display:flex;align-items:center;justify-content:center}
+  .tbtn:active{background:rgba(255,255,255,.45)}
+  #turbobtn{background:rgba(210,40,40,.35);border-color:rgba(255,130,130,.7)}
+  #turbobtn:active{background:rgba(210,40,40,.6)}
 </style>
 </head>
 <body>
+<div id="wrap">
 <canvas id="screen"></canvas>
+<div id="touchui">
+  <div class="grp">
+    <div class="tbtn" id="leftbtn">&#9664;</div>
+    <div class="tbtn" id="downbtn">&#9660;</div>
+    <div class="tbtn" id="rightbtn">&#9654;</div>
+  </div>
+  <div class="grp">
+    <div class="tbtn" id="turbobtn">F</div>
+  </div>
+</div>
+</div>
 <script>
 "use strict";
 // ---------- setup ----------
-const BW=320, BH=240, SCALE=3;
+const BW=320, BH=240;
 const cv=document.getElementById('screen');
-cv.width=BW*SCALE; cv.height=BH*SCALE;
-const ctx=cv.getContext('2d'); ctx.imageSmoothingEnabled=false;
+const ctx=cv.getContext('2d');
 const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
 const g=buf.getContext('2d');
+
+// responsive: buf is always drawn to fill cv's actual pixel size, so we just
+// resize cv (CSS size for layout, device-pixel size for a crisp nearest-neighbor scale)
+function fitScreen(){
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const scale=Math.max(1,Math.min(window.innerWidth/BW, window.innerHeight/BH));
+  cv.style.width=Math.floor(BW*scale)+'px';
+  cv.style.height=Math.floor(BH*scale)+'px';
+  cv.width=Math.round(BW*scale*dpr);
+  cv.height=Math.round(BH*scale*dpr);
+  ctx.imageSmoothingEnabled=false;
+}
+fitScreen();
+addEventListener('resize',fitScreen);
+addEventListener('orientationchange',fitScreen);
 
 // ---------- tuning ----------
 const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
@@ -70,6 +106,44 @@ addEventListener('keydown',e=>{
   if(e.key==='ArrowDown')  P.dir=0;
 });
 addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+
+// ---------- touch controls ----------
+const touchui=document.getElementById('touchui');
+function checkTouch(){
+  if(matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints>0){
+    touchui.classList.add('show');
+  }
+}
+checkTouch();
+addEventListener('resize',checkTouch);
+addEventListener('pointerdown',e=>{ if(e.pointerType==='touch') checkTouch(); });
+function gateTap(){                  // returns true if the tap only advanced title/gameover state
+  initAudio();
+  if(gamestate==='title'){ gamestate='play'; return true; }
+  if(gamestate==='over'){ reset(); gamestate='play'; return true; }
+  return false;
+}
+function stepLeft(){ if(P.state!=='eaten') P.dir=Math.max(P.dir-1,-2); }
+function stepRight(){ if(P.state!=='eaten') P.dir=Math.min(P.dir+1,2); }
+function stepDown(){ if(P.state!=='eaten') P.dir=0; }
+function holdButton(el,fn){
+  let iv=null,to=null;
+  const start=e=>{ e.preventDefault(); if(gateTap())return; fn();
+    to=setTimeout(()=>{ iv=setInterval(fn,90); },350); };
+  const stop=e=>{ if(e)e.preventDefault(); clearTimeout(to); clearInterval(iv); to=iv=null; };
+  el.addEventListener('pointerdown',start);
+  el.addEventListener('pointerup',stop);
+  el.addEventListener('pointerleave',stop);
+  el.addEventListener('pointercancel',stop);
+}
+holdButton(document.getElementById('leftbtn'),stepLeft);
+holdButton(document.getElementById('rightbtn'),stepRight);
+document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; stepDown(); });
+document.getElementById('turbobtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; keys['f']=true; });
+document.getElementById('turbobtn').addEventListener('pointerup',e=>{ e.preventDefault(); keys['f']=false; });
+document.getElementById('turbobtn').addEventListener('pointerleave',e=>{ e.preventDefault(); keys['f']=false; });
+document.getElementById('turbobtn').addEventListener('pointercancel',e=>{ e.preventDefault(); keys['f']=false; });
+cv.addEventListener('pointerdown',()=>{ gateTap(); });
 
 // ---------- world spawning ----------
 function hash2(x,y){ let h=(x*73856093)^(y*19349663); h=(h^(h>>>13))>>>0; return h; }

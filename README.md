@@ -26,6 +26,8 @@ Then visit `http://localhost:4173`.
 | Any key | Start from the title screen |
 | `Space` / `R` | Restart after a crash |
 
+On touch devices, on-screen buttons appear automatically: left/down/right to steer, and a red **F** button to hold for turbo. Tap anywhere on the slope to start or restart.
+
 ## Gameplay
 
 - The mountain is procedurally generated as you descend, with trees, dead trees, rocks, stumps, and jump ramps scattered across the slope.
@@ -36,6 +38,6 @@ Then visit `http://localhost:4173`.
 
 ## Tech notes
 
-- Renders to an off-screen low-res buffer (320×240) that's scaled 3x onto the visible canvas for a crisp pixel-art look (`image-rendering: pixelated`).
+- Renders to an off-screen low-res buffer (320×240) that's scaled onto the visible canvas for a crisp pixel-art look (`image-rendering: pixelated`). The canvas resizes to fit the viewport (capped at 2x device pixel ratio), so it fills the screen on both desktop and mobile.
 - World generation uses a deterministic hash over a grid of cells so terrain around the player is spawned/culled on the fly as the camera moves.
 - `window.GAME` exposes the player, yeti, obstacles, game state, and style score for debugging in the browser console.
