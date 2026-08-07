@@ -35,10 +35,13 @@
 <script>
 "use strict";
 // ---------- setup ----------
-const BH=240;
-let BW=320;   // recomputed responsively in fitScreen() to match the window's aspect ratio
-const MIN_BW=320, MAX_BW=900;   // never narrower than the original 4:3 view; upper bound is
-                                 // just a sanity cap, not a deliberate limit on widescreen fill
+let BW=320, BH=240;   // recomputed responsively in fitScreen() to fill the window
+// Deriving both BW and BH from one shared scale (below) already gives a tight natural fit on
+// both axes for any window shape, so these exist only as a defensive backstop against absurd
+// values (e.g. a sliver-sized devtools split) - NOT as design targets. Clamping either one
+// without also adjusting the scale would make the canvas overflow or gap on that axis, which
+// is exactly the bug this comment is here to warn future edits away from reintroducing.
+const MIN_WORLD=80, MAX_WORLD=2000;
 const cv=document.getElementById('screen');
 const ctx=cv.getContext('2d');
 const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
@@ -55,13 +58,18 @@ function fitScreen(){
   // would make the browser itself rescale the canvas by a non-integer factor to fill the CSS
   // box at the real dpr, reintroducing the exact blur this whole scheme exists to avoid.
   const dpr=window.devicePixelRatio||1;
-  // widen the visible world to match the window's aspect ratio instead of letterboxing a
-  // fixed 4:3 view - this fills widescreen browser windows edge to edge with more slope,
-  // rather than showing the same fixed view with blue bars down the sides.
-  BW=Math.round(Math.min(MAX_BW,Math.max(MIN_BW, BH*(window.innerWidth/window.innerHeight))));
-  buf.width=BW; buf.height=BH;
-  const s=Math.max(1,Math.floor(Math.min(window.innerWidth*dpr/BW, window.innerHeight*dpr/BH)));
+  // Pick ONE integer scale s (device px per world px) up front, then derive BOTH BW and BH
+  // from the window's actual device-pixel size divided by that same s. Deriving BW from a
+  // continuous aspect-ratio ratio and *separately* flooring s (the previous approach) wastes
+  // up to a whole scale-step of screen space whenever the ideal scale isn't a clean integer
+  // (e.g. an ideal scale of 3.97 floors to 3, discarding ~25% of the window) - that's the big
+  // blue margin. Rounding both dimensions against one fixed s bounds the leftover gap to at
+  // most half a scale-step per axis: a couple of pixels, not a quarter of the screen.
+  const s=Math.max(1,Math.round(window.innerHeight*dpr/240));
   PXS=s;
+  BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(window.innerWidth*dpr/s)));
+  BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(window.innerHeight*dpr/s)));
+  buf.width=BW; buf.height=BH;
   cv.width=BW*s;
   cv.height=BH*s;
   cv.style.width=(BW*s/dpr)+'px';
