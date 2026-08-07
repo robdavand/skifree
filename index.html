@@ -104,10 +104,16 @@ const sndTrick =()=>{ beep(500,0.08,'square',0.12); beep(700,0.09,'square',0.12,
 
 // ---------- input ----------
 addEventListener('keydown',e=>{
-  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' '].includes(e.key)) e.preventDefault();
+  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' ','Escape'].includes(e.key)) e.preventDefault();
   initAudio();
   const k=e.key.toLowerCase();
   keys[k]=true;
+  if(e.key==='Escape'){
+    if(gamestate==='play')   gamestate='paused';
+    else if(gamestate==='paused') gamestate='play';
+    return;
+  }
+  if(gamestate==='paused'){ if(k==='m'){ reset(); gamestate='title'; } return; }
   if(gamestate==='title'){ gamestate='play'; return; }
   if(gamestate==='over'){ if(k===' '||k==='r'){ reset(); gamestate='play'; } return; }
   if(P.state==='eaten') return;
@@ -136,9 +142,9 @@ function gateTap(){                  // returns true if the tap only advanced ti
   if(gamestate==='over'){ reset(); gamestate='play'; return true; }
   return false;
 }
-function stepLeft(){ if(P.state!=='eaten' && P.z<=0) P.dir=Math.max(P.dir-1,-2); }
-function stepRight(){ if(P.state!=='eaten' && P.z<=0) P.dir=Math.min(P.dir+1,2); }
-function stepDown(){ if(P.state!=='eaten' && P.z<=0) P.dir=0; }
+function stepLeft(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=Math.max(P.dir-1,-2); }
+function stepRight(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=Math.min(P.dir+1,2); }
+function stepDown(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=0; }
 function bindHeld(el,keyname){        // mirrors a button into keys{} so air tricks can read it like a keyboard hold
   const set=v=>e=>{ e.preventDefault(); keys[keyname]=v; };
   el.addEventListener('pointerdown',set(true));
@@ -352,7 +358,11 @@ function drawSkier(x,y){
   }
   const a=ANGLES[P.dir+2];
   g.save(); g.translate(x,yd); g.rotate(-a);
-  if(P.z>0){ g.rotate(P.spin); g.scale(1,Math.cos(P.flip)); }
+  // spin (← →) turns the character horizontally, so it's simulated with a width squash
+  // (like a figure skater viewed from the front) rather than an in-plane rotate, which
+  // would read as a sideways cartwheel. flip (↑ ↓) is a real front/back somersault, so a
+  // height squash is correct there.
+  if(P.z>0){ g.scale(Math.cos(P.spin),Math.cos(P.flip)); }
   const splay=P.z>0?0.45:0;
   // skis
   g.fillStyle='#e0b000';
@@ -458,13 +468,14 @@ function draw(){
   // desktop control hint box background (touch users have on-screen buttons instead)
   const showHint=!touchMode && gamestate!=='title';
   if(showHint){
-    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-33,132,30);
-    g.strokeStyle='#334'; g.strokeRect(3.5,BH-32.5,131,29);
+    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-42,132,39);
+    g.strokeStyle='#334'; g.strokeRect(3.5,BH-41.5,131,38);
   }
 
-  let titleY=0, overY=0;
-  if(gamestate==='title')      titleY=panel(230,134);
-  else if(gamestate==='over')  overY=panel(220,100);
+  let titleY=0, overY=0, pauseY=0;
+  if(gamestate==='title')       titleY=panel(230,150);
+  else if(gamestate==='over')   overY=panel(220,100);
+  else if(gamestate==='paused') pauseY=panel(190,80);
 
   ctx.drawImage(buf,0,0,cv.width,cv.height);
 
@@ -476,12 +487,14 @@ function draw(){
     ctext('TURBO!', BW-90,36,8,{color:'#c22'});
   }
   if(showHint){
-    ctext('← → steer   ↓ down',6,BH-30,7);
-    ctext('hold F for turbo',6,BH-21,7);
-    ctext('in air: ← → spin  ↑ ↓ flip',6,BH-12,7);
+    ctext('← → steer   ↓ down',6,BH-39,7);
+    ctext('hold F for turbo',6,BH-30,7);
+    ctext('in air: ← → spin  ↑ ↓ flip',6,BH-21,7);
+    ctext('Esc: pause',6,BH-12,7);
   }
-  if(gamestate==='title')      drawTitleText(titleY);
-  else if(gamestate==='over')  drawOverText(overY,meters);
+  if(gamestate==='title')       drawTitleText(titleY);
+  else if(gamestate==='over')   drawOverText(overY,meters);
+  else if(gamestate==='paused') drawPausedText(pauseY);
 }
 function ctext(str,x,y,size,opts){
   opts=opts||{};
@@ -504,13 +517,19 @@ function drawTitleText(y){
   ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
   ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+79, 8, {align:'center'});
   ctext('beware the thing at 2000 m', BW/2, y+95, 8, {align:'center',color:'#a22'});
-  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+113, 8, {align:'center'});
+  ctext('Esc to pause anytime', BW/2, y+111, 8, {align:'center'});
+  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+129, 8, {align:'center'});
 }
 function drawOverText(y,meters){
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
   ctext('distance: '+meters+' m', BW/2, y+38, 8, {align:'center'});
   ctext('style: '+Math.floor(style), BW/2, y+50, 8, {align:'center'});
   if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+74, 8, {align:'center'});
+}
+function drawPausedText(y){
+  ctext('PAUSED', BW/2, y+16, 14, {align:'center',bold:true});
+  ctext('Esc — Resume', BW/2, y+46, 8, {align:'center'});
+  ctext('M — Main Menu', BW/2, y+60, 8, {align:'center'});
 }
 
 // ---------- main loop ----------
