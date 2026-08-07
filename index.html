@@ -47,7 +47,11 @@ const g=buf.getContext('2d');
 // source pixels to an uneven number of screen pixels and the image shimmers/blurs.
 let PXS=1;   // device pixels per buf pixel — used to place text at native resolution
 function fitScreen(){
-  const dpr=Math.min(window.devicePixelRatio||1,2);
+  // must be the TRUE devicePixelRatio (uncapped): cv.width and cv.style.width both derive
+  // from it, so backing-store pixels map exactly 1:1 to physical screen pixels. Capping this
+  // would make the browser itself rescale the canvas by a non-integer factor to fill the CSS
+  // box at the real dpr, reintroducing the exact blur this whole scheme exists to avoid.
+  const dpr=window.devicePixelRatio||1;
   const s=Math.max(1,Math.floor(Math.min(window.innerWidth*dpr/BW, window.innerHeight*dpr/BH)));
   PXS=s;
   cv.width=BW*s;
