@@ -104,46 +104,64 @@ if(window.visualViewport){
 const MAXV=170, TURBOV=265, YETIV=196, GRAV=380;
 const PX_PER_M=8, YETI_AT=1000, CELL=48;
 const SPIN_RATE=7.5, FLIP_RATE=6.0;   // radians/sec while holding a trick direction in the air
+// hunt mode: you are the yeti. It runs rather than slides, so its speed is simply commanded
+// rather than fed by gravity, and its sprint has to beat a panicking skier or nothing is catchable.
+const HUNT_SECS=60, HUNTV=180, HUNTSPRINT=252;
+const PREYV=132, PREYPANIC=206, PREY_SEE=95, PREY_MAX=5;
 
 // ---------- state ----------
 let gamestate='title';           // title | play | over
 let P, yeti, obstacles, cells, tracks, prints, particles, popups, live, style, nextYetiAt, keys={};
+let preys, eaten, timeLeft, nextPreyAt;
 let timeNow=0;
 
 // ---------- local high score (this device only, no server) ----------
-let best={dist:0,style:0}, newBestDist=false, newBestStyle=false;
+let best={dist:0,style:0,eaten:0}, newBestDist=false, newBestStyle=false, newBestEaten=false;
 try{
   const saved=JSON.parse(localStorage.getItem('skifree_best'));
-  if(saved) best={dist:saved.dist||0,style:saved.style||0};
+  if(saved) best={dist:saved.dist||0,style:saved.style||0,eaten:saved.eaten||0};
 }catch(e){}
+function saveBest(){ try{ localStorage.setItem('skifree_best',JSON.stringify(best)); }catch(e){} }
 function checkBest(meters,finalStyle){
   newBestDist=meters>best.dist;
   newBestStyle=finalStyle>best.style;
   if(newBestDist) best.dist=meters;
   if(newBestStyle) best.style=finalStyle;
-  if(newBestDist||newBestStyle){
-    try{ localStorage.setItem('skifree_best',JSON.stringify(best)); }catch(e){}
-  }
+  if(newBestDist||newBestStyle) saveBest();
+}
+function checkBestHunt(n){
+  newBestEaten=n>best.eaten;
+  if(newBestEaten){ best.eaten=n; saveBest(); }
 }
 
-// ---------- character choice (cosmetic only — same physics either way) ----------
-let equip='ski';   // 'ski' | 'board', picked on the title screen with ← →
+// ---------- character choice ----------
+// The first two are skins over one set of physics. The third swaps the game round: picking the
+// yeti makes you the hunter, and the run becomes a timed count of how many skiers you can catch.
+const CHARS=['ski','board','yeti'];
+const CHAR_NAMES={ski:'SKIS',board:'SNOWBOARD',yeti:'YETI  (hunt mode)'};
+let equip='ski';
 try{
   const savedEquip=localStorage.getItem('skifree_equip');
-  if(savedEquip==='ski'||savedEquip==='board') equip=savedEquip;
+  if(CHARS.indexOf(savedEquip)>=0) equip=savedEquip;
 }catch(e){}
-function toggleChar(){
-  equip=equip==='ski'?'board':'ski';
+function cycleChar(step){
+  equip=CHARS[(CHARS.indexOf(equip)+step+CHARS.length)%CHARS.length];
   try{ localStorage.setItem('skifree_equip',equip); }catch(e){}
 }
+function hunting(){ return equip==='yeti'; }
 
 function reset(){
+  // t/eatT/step drive the yeti animation while hunting; the ski fields sit unused in that mode
+  // (and vice versa) rather than being split into two shapes the shared helpers would have to
+  // tell apart. state stays 'ski' for a yeti on its feet — it means "upright and moving".
   P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0,spin:0,flip:0,
-     spinsPaid:0,flipsPaid:0,landT:0};
+     spinsPaid:0,flipsPaid:0,landT:0,turbo:false,equip:equip,
+     t:0,eatT:0,step:0,stunT:0};
   yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0,step:0};
   obstacles=[]; cells=new Set(); tracks=[]; prints=[]; particles=[]; popups=[]; live=null;
+  preys=[]; eaten=0; timeLeft=HUNT_SECS; nextPreyAt=0;
   style=0; nextYetiAt=YETI_AT;
-  newBestDist=false; newBestStyle=false;
+  newBestDist=false; newBestStyle=false; newBestEaten=false;
 }
 reset();
 
@@ -180,10 +198,11 @@ addEventListener('keydown',e=>{
   }
   if(gamestate==='paused'){ if(k==='m'){ reset(); gamestate='title'; } return; }
   if(gamestate==='title'){
-    if(e.key==='ArrowLeft'||e.key==='ArrowRight'){ toggleChar(); return; }
-    gamestate='play'; return;
+    if(e.key==='ArrowLeft'){  cycleChar(-1); return; }
+    if(e.key==='ArrowRight'){ cycleChar(1);  return; }
+    startRun(); return;
   }
-  if(gamestate==='over'){ if(k===' '||k==='r'){ reset(); gamestate='play'; } return; }
+  if(gamestate==='over'){ if(k===' '||k==='r') startRun(); return; }
   if(P.state==='eaten') return;
   if(P.z>0) return;   // airborne: arrows drive spin/flip tricks instead (handled continuously in update())
   if(e.key==='ArrowLeft')  P.dir=Math.max(P.dir-1,-2);
@@ -204,10 +223,12 @@ function checkTouch(){
 checkTouch();
 addEventListener('resize',checkTouch);
 addEventListener('pointerdown',e=>{ if(e.pointerType==='touch') checkTouch(); });
+// Starting from the menu re-runs reset() so the run picks up whichever character is selected now
+// (P caches equip, and hunt mode needs its clock back at the full minute).
+function startRun(){ reset(); gamestate='play'; }
 function gateTap(){                  // returns true if the tap only advanced title/gameover state
   initAudio();
-  if(gamestate==='title'){ gamestate='play'; return true; }
-  if(gamestate==='over'){ reset(); gamestate='play'; return true; }
+  if(gamestate==='title'||gamestate==='over'){ startRun(); return true; }
   return false;
 }
 function stepLeft(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=Math.max(P.dir-1,-2); }
@@ -232,8 +253,8 @@ function holdButton(el,fn,titleFn){    // titleFn: alternate tap behavior while 
   el.addEventListener('pointerleave',stop);
   el.addEventListener('pointercancel',stop);
 }
-holdButton(document.getElementById('leftbtn'),stepLeft,toggleChar);
-holdButton(document.getElementById('rightbtn'),stepRight,toggleChar);
+holdButton(document.getElementById('leftbtn'),stepLeft,()=>cycleChar(-1));
+holdButton(document.getElementById('rightbtn'),stepRight,()=>cycleChar(1));
 document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; stepDown(); });
 bindHeld(document.getElementById('leftbtn'),'arrowleft');
 bindHeld(document.getElementById('rightbtn'),'arrowright');
@@ -338,19 +359,109 @@ function crash(){
 const ANGLES=[-1.30,-0.55,0,0.55,1.30];
 // Shared by the animation and by the footprint/snow-spray emitter, so a print always lands on the
 // frame the foot is actually down. The stride quickens as the yeti winds up, matching its speed
-// ramp in the chase branch below.
-function yetiRunPhase(){ return yeti.t*(11+Math.min(1,yeti.t/15)*5); }
+// ramp in the chase branch below. Takes the state so the hunted yeti and the played one share it.
+function yetiRunPhase(st){ return st.t*(11+Math.min(1,st.t/15)*5); }
+const HITBOX={tree:4,deadtree:3,rock:5,stump:3};
+function hitsObstacle(x,y,o,pad){
+  const hw=HITBOX[o.type];
+  return hw!==undefined && Math.abs(x-o.x)<hw+(pad||0) && y-o.y>-2 && y-o.y<4;
+}
+
+// ---------- hunt mode ----------
+// You are the yeti. It runs rather than slides: speed is commanded outright instead of being fed
+// by gravity, and there is no skid-to-a-stop, so it holds full pace straight across the hill.
+// That is what lets it cut off a skier who has broken sideways, which is the whole chase.
+function updateHunter(dt){
+  P.t+=dt;
+  P.invT=Math.max(0,P.invT-dt);
+  P.stunT=Math.max(0,P.stunT-dt);
+  if(P.eatT>0){ P.eatT-=dt; P.speed=0; return; }     // held still over the meal
+  const target=P.stunT>0?35:(keys['f']?HUNTSPRINT:HUNTV);
+  P.speed+=(target-P.speed)*Math.min(1,3.2*dt);
+  const a=ANGLES[P.dir+2];
+  P.x+=Math.sin(a)*P.speed*dt; P.y+=Math.cos(a)*P.speed*dt;
+
+  const half=Math.floor(yetiRunPhase(P)/Math.PI);
+  if(half!==P.step && P.speed>40){
+    P.step=half;
+    const side=(half%2)?1:-1;
+    prints.push({x:P.x+side*4,y:P.y,life:2.2});
+    if(prints.length>60) prints.shift();
+    puff(P.x+side*4,P.y,2,26);
+  }
+  // Trees stagger the yeti rather than wiping it out — it shoulders through and only loses its
+  // stride. A full crash would turn the hunt into an avoidance game when it should be a pursuit.
+  if(P.invT<=0){
+    for(const o of obstacles){
+      if(hitsObstacle(P.x,P.y,o,2)){
+        P.stunT=0.45; P.invT=1.0; P.speed*=0.3;
+        puff(P.x,P.y,7,70); sndCrash(); break;
+      }
+    }
+  }
+}
+function spawnPrey(camY){
+  preys.push({x:P.x+(Math.random()-0.5)*BW*0.95,
+              y:camY+BH*0.55+Math.random()*(BH*0.5+40),
+              dir:0, speed:PREYV, equip:Math.random()<0.5?'ski':'board',
+              state:'ski', z:0, spin:0, flip:0, landT:0, crashT:0, turbo:false,
+              wanderT:0, panic:0});
+}
+function updatePrey(dt,camY){
+  if(preys.length<PREY_MAX && timeNow>nextPreyAt){ spawnPrey(camY); nextPreyAt=timeNow+0.45; }
+  for(const s of preys){
+    if(s.state==='crash'){
+      s.crashT-=dt;
+      if(s.crashT<=0){ s.state='ski'; s.speed=40; }
+      continue;
+    }
+    s.landT=Math.max(0,s.landT-dt);
+    const dx=s.x-P.x, dy=s.y-P.y;
+    s.panic=Math.hypot(dx,dy)<PREY_SEE ? 1 : Math.max(0,s.panic-dt*0.7);
+    if(s.panic>0){
+      // break away from whichever side the yeti is on, hard enough to cut across the fall line
+      s.dir=(dx>=0?1:-1)*(Math.abs(dx)<30?2:1);
+      s.turbo=true;
+    }else{
+      s.turbo=false;
+      s.wanderT-=dt;
+      if(s.wanderT<=0){ s.wanderT=0.9+Math.random()*1.8; s.dir=[-1,0,0,0,1][(Math.random()*5)|0]; }
+    }
+    s.speed+=((s.turbo?PREYPANIC:PREYV)-s.speed)*Math.min(1,2.2*dt);
+    const a=ANGLES[s.dir+2];
+    s.x+=Math.sin(a)*s.speed*dt; s.y+=Math.cos(a)*s.speed*dt;
+    // they clip trees too, and a skier who wipes out is your best shot at one that got a jump on you
+    for(const o of obstacles){
+      if(hitsObstacle(s.x,s.y,o)){ s.state='crash'; s.crashT=1.1; s.speed=0; puff(s.x,s.y,10,80); break; }
+    }
+  }
+  if(P.eatT<=0 && P.stunT<=0){
+    for(let i=0;i<preys.length;i++){
+      const s=preys[i];
+      if(Math.hypot(s.x-P.x,s.y-P.y) < (s.state==='crash'?14:11)){   // a sprawled skier is easier to grab
+        preys.splice(i,1);
+        eaten++; P.eatT=0.75; P.speed=0;
+        scorePopup(1,'EATEN','#1a8a3a',P.x,P.y); sndMunch();
+        break;
+      }
+    }
+  }
+  preys=preys.filter(s=>s.y>camY-70 && s.y<camY+BH+220 && Math.abs(s.x-P.x)<BW*1.1);
+}
+
 function update(dt){
   timeNow+=dt;
   if(gamestate!=='play') return;
 
   // --- player ---
-  if(P.state==='crash'){
+  if(hunting()) updateHunter(dt);
+  else if(P.state==='crash'){
     P.crashT-=dt;
     if(P.crashT<=0){ P.state='ski'; P.invT=1.0; P.speed=30; }
   }else if(P.state==='ski'){
     P.invT=Math.max(0,P.invT-dt);
     P.landT=Math.max(0,P.landT-dt);
+    P.turbo=!!keys['f'];      // the tuck pose reads this off the state, like a prey skier's does
     const a=ANGLES[P.dir+2];
     if(P.z<=0){                        // steering/speed only change with your feet on the snow
       if(Math.abs(P.dir)===2){
@@ -416,10 +527,7 @@ function update(dt){
           if(dx<8 && dy>-3 && dy<3 && vy>40 && P.vz<=0){
             P.vz=85+P.speed*0.45; P.z=0.1; P.airT=0; P.spinsPaid=0; P.flipsPaid=0; sndJump();
           }
-        }else{
-          const hw={tree:4,deadtree:3,rock:5,stump:3}[o.type];
-          if(dx<hw && dy>-2 && dy<4){ crash(); break; }
-        }
+        }else if(hitsObstacle(P.x,P.y,o)){ crash(); break; }
       }
     }
   }
@@ -428,9 +536,16 @@ function update(dt){
   spawnAround(camX,camY);
   obstacles=obstacles.filter(o=>o.y>camY-80 && Math.abs(o.x-P.x)<900);
 
-  // --- yeti ---
+  // --- hunt mode: prey, and the clock you are racing ---
+  if(hunting()){
+    updatePrey(dt,camY);
+    timeLeft-=dt;
+    if(timeLeft<=0){ timeLeft=0; gamestate='over'; checkBestHunt(eaten); }
+  }
+
+  // --- yeti (the one chasing you — it has no part in a run where you are it) ---
   const meters=Math.max(0,P.y/PX_PER_M);
-  if(!yeti.active && meters>nextYetiAt){
+  if(!hunting() && !yeti.active && meters>nextYetiAt){
     yeti.active=true; yeti.state='chase'; yeti.t=0;
     yeti.x=P.x+(Math.random()-0.5)*160; yeti.y=camY-24;
     sndRoar();
@@ -442,7 +557,7 @@ function update(dt){
       const v=YETIV+Math.min(30,yeti.t*2);            // slowly gets angrier
       yeti.x+=dx/d*v*dt; yeti.y+=dy/d*v*dt;
       // every half-cycle of the run animation is one foot landing: stamp a print and kick up snow
-      const half=Math.floor(yetiRunPhase()/Math.PI);
+      const half=Math.floor(yetiRunPhase(yeti)/Math.PI);
       if(half!==yeti.step){
         yeti.step=half;
         const side=(half%2)?1:-1;
@@ -766,19 +881,22 @@ SP.ramp=paintSprite(36,16,18,13,p=>{
 
 // ---------- drawing ----------
 // All of these take BUFFER pixel coordinates; the caller converts from world units.
-function drawSkier(x,y){
-  const board=equip==='board';
+// s is any skier-shaped thing — the player, or one of the skiers a yeti is hunting. Everything
+// it needs comes off that object rather than off the globals, which is what lets the same rig
+// draw a crowd of them.
+function drawSkier(x,y,s){
+  const board=s.equip==='board';
   const kit=board?KIT.board:KIT.ski;
-  const yd=y-P.z*U;
-  if(P.z>0){                                    // ground shadow, shrinking as you climb
-    const k=Math.max(0.35,1-P.z/90), w=Math.round(20*k);
+  const yd=y-s.z*U;
+  if(s.z>0){                                    // ground shadow, shrinking as you climb
+    const k=Math.max(0.35,1-s.z/90), w=Math.round(20*k);
     g.fillStyle='rgba(120,140,160,.40)';
     g.fillRect(x-(w>>1),y-2,w,4);
   }
-  if(P.state==='eaten') return;
-  if(P.state==='crash'){ drawCrash(x,yd,kit,board); return; }
-  const a=ANGLES[P.dir+2], air=P.z>0;
-  const tuck=!air && keys['f'] && P.speed>60;   // turbo: fold up small and go
+  if(s.state==='eaten') return;
+  if(s.state==='crash'){ drawCrash(x,yd,kit,board,s); return; }
+  const a=ANGLES[s.dir+2], air=s.z>0;
+  const tuck=!air && s.turbo && s.speed>60;     // turbo: fold up small and go
   if(tuck) speedLines(x,y);
   g.save(); g.translate(x,yd); g.rotate(-a);
 
@@ -787,14 +905,14 @@ function drawSkier(x,y){
   // back are widest at |cos|, the profile at |sin|; picking whichever is larger switches views
   // exactly where the two projections are equal, so the width never jumps at the changeover.
   // A negative scale mirrors the art, which is what turning past half a revolution should do.
-  const cs=Math.cos(P.spin), sn=Math.sin(P.spin);
+  const cs=Math.cos(s.spin), sn=Math.sin(s.spin);
   const side=Math.abs(sn)>Math.abs(cs);
   const torso=side?kit.torsoSide:(cs<0?kit.torsoBack:kit.torso);
   const head =side?kit.headSide :(cs<0?kit.headBack :kit.head);
   // flip (↑ ↓) is a front/back somersault seen edge-on, so a height squash is right for it.
   // The landing squash rides on top of the same two scales.
-  const sq=P.landT/0.20;
-  g.scale((side?sn:cs)*(1+sq*0.35), Math.cos(P.flip)*(1-sq*0.40));
+  const sq=s.landT/0.20;
+  g.scale((side?sn:cs)*(1+sq*0.35), Math.cos(s.flip)*(1-sq*0.40));
 
   if(board){
     // snowboard: one wide board under both feet, pointed downhill like skis (the rider's
@@ -807,7 +925,7 @@ function drawSkier(x,y){
   }
   // Everything above the hips leans into the turn and folds down in a tuck. Rotating about the
   // hip rather than the feet keeps the skis flat on the snow while the body angles over them.
-  const lean=air?0:P.dir*0.13, drop=tuck?4:0;
+  const lean=air?0:s.dir*0.13, drop=tuck?4:0;
   g.save(); g.translate(0,-4+drop); g.rotate(lean);
   blit(torso,0,0);
   // arms swing wide overhead in the air, tuck back along the body under turbo; each still grips
@@ -829,8 +947,8 @@ function drawSkier(x,y){
 }
 // The wipeout runs as three beats over the 1.3s crash timer rather than one frozen pose: you
 // tumble, you land in a heap, then you push yourself back upright as control returns.
-function drawCrash(x,yd,kit,board){
-  const el=1.3-P.crashT;
+function drawCrash(x,yd,kit,board,s){
+  const el=1.3-s.crashT;
   const rot=el<0.30 ? el*4.5 : (el<0.85 ? 1.35 : Math.max(0.55,1.35-(el-0.85)*1.8));
   const fling=Math.min(1,el*3.5);
   if(board){
@@ -847,6 +965,11 @@ function drawCrash(x,yd,kit,board){
   blit(kit.head,0,-16);
   g.restore();
 }
+// P carries the played yeti's animation clocks; this adapts them to what drawYeti expects. eatT
+// counts up into the meal while P.eatT counts the pause down, hence the subtraction.
+function huntPose(){
+  return {state:P.eatT>0?'eat':'chase', t:P.t, eatT:0.75-P.eatT};
+}
 // Backdraft streaks while turbo is held — the only cue for it used to be a word in the HUD.
 function speedLines(x,y){
   g.fillStyle='rgba(150,175,200,.55)';
@@ -856,17 +979,19 @@ function speedLines(x,y){
     g.fillRect(x-16+o*3+(i&1?22:0), Math.round(ly), 1, 7);
   }
 }
-function drawYeti(x,y){
-  const run=yeti.state==='chase', eat=yeti.state==='eat';
-  // update() ramps the yeti's speed with yeti.t but nothing showed it; tie the visuals to the
-  // same clock so a yeti that has been chasing you for a while visibly winds up.
-  const rage=Math.min(1,yeti.t/15);
-  const ph=run?Math.sin(yetiRunPhase()):0;
+// st is whichever yeti this is: the one hunting you, or the one you are playing. It needs
+// state ('chase' | 'eat'), t (seconds since it started running) and eatT (seconds into a meal).
+function drawYeti(x,y,st){
+  const run=st.state==='chase', eat=st.state==='eat';
+  // update() ramps the yeti's speed with its clock but nothing showed it; tie the visuals to the
+  // same clock so a yeti that has been running for a while visibly winds up.
+  const rage=Math.min(1,st.t/15);
+  const ph=run?Math.sin(yetiRunPhase(st)):0;
   const bob=run?Math.round(Math.abs(ph)*2)-1:0;
   const lift=Math.round(ph*5);
   // It arrives already sprinting, so the entrance roar is a pose held over the first second of
   // the chase rather than a pause: standing still would just let the camera leave it behind.
-  const roar=run && yeti.t<1.0;
+  const roar=run && st.t<1.0;
   // stacked rects rather than one slab, so the shadow reads as a pool under the feet
   g.fillStyle='rgba(96,116,142,.22)';
   g.fillRect(x-10,y-3,20,5); g.fillRect(x-13,y-2,26,3);
@@ -888,7 +1013,7 @@ function drawYeti(x,y){
   const my=hy-6;   // lines up with the muzzle band baked into the head art
   if(eat||roar){
     // eating chomps on a timer; the roar holds its jaw wide and shudders
-    const gape=eat?(Math.floor(yeti.eatT*6)%2)*3:3+Math.round(Math.sin(yeti.t*30));
+    const gape=eat?(Math.floor(st.eatT*6)%2)*3:3+Math.round(Math.sin(st.t*30));
     g.fillStyle='#101018'; g.fillRect(x-6,my,12,5+gape);
     g.fillStyle='#a02020'; g.fillRect(x-4,my+2,8,2+gape);
     g.fillStyle='#ffffff';
@@ -941,6 +1066,10 @@ function draw(){
     items.push(o);
   }
   items.push({x:P.x,y:P.y,type:'player'});
+  for(const s of preys){
+    if(s.x-camX<-30||s.x-camX>BW+30||s.y-camY<-20||s.y-camY>BH+40) continue;
+    items.push({x:s.x,y:s.y,type:'prey',s});
+  }
   if(yeti.active) items.push({x:yeti.x,y:yeti.y,type:'yeti'});
   items.sort((a,b)=>a.y-b.y);
   for(const it of items){
@@ -950,8 +1079,9 @@ function draw(){
       case 'tree': case 'deadtree': case 'rock': case 'stump':
                        blit(set[it.v%set.length],x,y); break;
       case 'ramp':     blit(SP.ramp,x,y); break;
-      case 'player':   drawSkier(x,y); break;
-      case 'yeti':     drawYeti(x,y); break;
+      case 'prey':     drawSkier(x,y,it.s); break;
+      case 'player':   if(hunting()) drawYeti(x,y,huntPose()); else drawSkier(x,y,P); break;
+      case 'yeti':     drawYeti(x,y,yeti); break;
     }
   }
 
@@ -974,7 +1104,7 @@ function draw(){
   if(showHint) box(3,BH-42,132,39,'rgba(255,255,255,.82)');
 
   let titleY=0, overY=0, pauseY=0;
-  if(gamestate==='title')       titleY=panel(230,147);
+  if(gamestate==='title'){       titleY=panel(240,178); drawCharIcons(titleY); }
   else if(gamestate==='over')   overY=panel(220,100);
   else if(gamestate==='paused') pauseY=panel(190,80);
 
@@ -996,16 +1126,29 @@ function draw(){
   }
 
   // ---- text, drawn straight onto the full-resolution canvas for crisp anti-aliasing ----
-  ctext('dist  '+meters+' m', BW-90,6,8);
-  ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15,8);
-  ctext('style '+Math.floor(style), BW-90,24,8);
-  if(keys['f']&&gamestate==='play'&&P.state==='ski'){
-    ctext('TURBO!', BW-90,36,8,{color:'#c22'});
+  if(hunting()){
+    ctext('time  '+timeLeft.toFixed(1)+'s', BW-90,6,8,{color:timeLeft<10?'#c22':'#112',bold:timeLeft<10});
+    ctext('eaten '+eaten, BW-90,15,8);
+    ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,24,8);
+    if(keys['f']&&gamestate==='play') ctext('SPRINT!', BW-90,36,8,{color:'#c22'});
+  }else{
+    ctext('dist  '+meters+' m', BW-90,6,8);
+    ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15,8);
+    ctext('style '+Math.floor(style), BW-90,24,8);
+    if(keys['f']&&gamestate==='play'&&P.state==='ski'){
+      ctext('TURBO!', BW-90,36,8,{color:'#c22'});
+    }
   }
   if(showHint){
-    ctext('← → steer   ↓ down',6,BH-39,7);
-    ctext('hold F for turbo',6,BH-30,7);
-    ctext('in air: ← → spin  ↑ ↓ flip',6,BH-21,7);
+    if(hunting()){
+      ctext('← → steer   ↓ straight on',6,BH-39,7);
+      ctext('hold F to sprint',6,BH-30,7);
+      ctext('run them down and eat them',6,BH-21,7);
+    }else{
+      ctext('← → steer   ↓ down',6,BH-39,7);
+      ctext('hold F for turbo',6,BH-30,7);
+      ctext('in air: ← → spin  ↑ ↓ flip',6,BH-21,7);
+    }
     ctext('Esc: pause',6,BH-12,7);
   }
   if(gamestate==='title')       drawTitleText(titleY);
@@ -1043,19 +1186,65 @@ function panel(w,h){
   g.strokeRect(x*U+2.5,y*U+2.5,w*U-5,h*U-5);
   return y;
 }
+// Spacing between the three menu portraits, and the row they stand on. Shared so the highlight,
+// the icons and the name underneath cannot drift apart.
+function iconGap(){ return Math.min(62,BW*0.26); }
+// Drawn during the buffer pass, unlike the rest of the menu: these are sprites, and sprites live
+// on the pixel layer. The characters draw themselves through the same functions the game uses,
+// so a portrait can never fall out of step with how that character actually looks on the hill.
+function drawCharIcons(y){
+  const gap=iconGap();
+  CHARS.forEach((c,i)=>{
+    const cx=BW/2+(i-1)*gap;
+    if(c===equip) box(cx-gap*0.28, y+38, gap*0.56, 40, 'rgba(176,203,235,.5)');
+    // The two rigs hang off their origins differently — skis run on past the boots, a yeti stands
+    // on its feet — so each gets the ground line that centres it in the same cell.
+    const gy=Math.round((c==='yeti'?y+76:y+64)*U), x=Math.round(cx*U);
+    if(c==='yeti'){
+      // cycled rather than free-running, so the portrait roars every few seconds instead of once
+      drawYeti(x,gy,{state:'chase',t:0.25+(timeNow%4.5),eatT:0});
+    }else{
+      drawSkier(x,gy,{equip:c,state:'ski',dir:0,speed:120,z:0,spin:0,flip:0,
+                      landT:0,crashT:0,turbo:false});
+    }
+  });
+}
 function drawTitleText(y){
-  ctext('S K I B I D I F R E E', BW/2, y+12, 16, {align:'center',bold:true});
-  ctext(best.dist>0 ? ('your best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style)) : 'no runs yet - this is your first!',
-    BW/2, y+27, 8, {align:'center',color:'#458'});
-  ctext('◄  '+(equip==='board'?'SNOWBOARD':'SKIS')+'  ►    (← → to change)', BW/2, y+40, 8, {align:'center',bold:true});
-  ctext('← →  steer      ↓  straight down', BW/2, y+53, 8, {align:'center'});
-  ctext('hold F for turbo', BW/2, y+66, 8, {align:'center'});
-  ctext('hit ramps for style points', BW/2, y+79, 8, {align:'center'});
-  ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+92, 8, {align:'center'});
-  ctext('Esc to pause anytime', BW/2, y+108, 8, {align:'center'});
-  if(Math.floor(timeNow*2)%2) ctext('- press ↓ or SPACE to ski -', BW/2, y+126, 8, {align:'center'});
+  ctext('S K I B I D I F R E E', BW/2, y+8, 16, {align:'center',bold:true});
+  ctext(hunting()
+      ? (best.eaten>0 ? ('your best hunt: '+best.eaten+' eaten') : 'no hunts yet - go and get one')
+      : (best.dist>0  ? ('your best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style))
+                      : 'no runs yet - this is your first!'),
+    BW/2, y+26, 8, {align:'center',color:'#458'});
+  ctext('◄  '+CHAR_NAMES[equip]+'  ►', BW/2, y+82, 8, {align:'center',bold:true});
+  ctext('(← → to change)', BW/2, y+93, 7, {align:'center',color:'#458'});
+  if(hunting()){
+    ctext('you are the yeti - hunt the hill', BW/2, y+106, 8, {align:'center'});
+    ctext('← →  steer      ↓  straight on', BW/2, y+119, 8, {align:'center'});
+    ctext('hold F to sprint them down', BW/2, y+132, 8, {align:'center'});
+    ctext('eat as many as you can in '+HUNT_SECS+'s', BW/2, y+145, 8, {align:'center'});
+  }else{
+    ctext('← →  steer      ↓  straight down', BW/2, y+106, 8, {align:'center'});
+    ctext('hold F for turbo', BW/2, y+119, 8, {align:'center'});
+    ctext('hit ramps for style points', BW/2, y+132, 8, {align:'center'});
+    ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+145, 8, {align:'center'});
+  }
+  if(Math.floor(timeNow*2)%2)
+    ctext(hunting()?'- press ↓ or SPACE to hunt -':'- press ↓ or SPACE to ski -',
+      BW/2, y+161, 8, {align:'center'});
 }
 function drawOverText(y,meters){
+  if(hunting()){
+    ctext("TIME'S UP", BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
+    ctext('skiers eaten: '+eaten+(newBestEaten?'  NEW BEST!':''), BW/2, y+38, 8,
+      {align:'center',bold:true,color:newBestEaten?'#1a8a3a':'#112'});
+    ctext(eaten===0?'not one. they all got away.'
+         :eaten===1?'one. a lean day on the mountain.'
+                   :'a good hunt.', BW/2, y+50, 8, {align:'center',color:'#458'});
+    ctext('best hunt: '+best.eaten, BW/2, y+64, 8, {align:'center'});
+    if(Math.floor(timeNow*2)%2) ctext('- press SPACE to hunt again -', BW/2, y+82, 8, {align:'center'});
+    return;
+  }
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
   ctext('distance: '+meters+' m'+(newBestDist?'  NEW BEST!':''), BW/2, y+38, 8,
     {align:'center',color:newBestDist?'#1a8a3a':'#112'});
@@ -1083,7 +1272,9 @@ requestAnimationFrame(frame);
 window.GAME={get P(){return P},get yeti(){return yeti},get obstacles(){return obstacles},
   get state(){return gamestate},set state(s){gamestate=s},reset,
   get style(){return style},get popups(){return popups},
-  get sprites(){return SP},get kits(){return KIT}};
+  get sprites(){return SP},get kits(){return KIT},
+  get preys(){return preys},get eaten(){return eaten},get timeLeft(){return timeLeft},
+  get equip(){return equip},set equip(v){ if(CHARS.indexOf(v)>=0) equip=v; }};
 </script>
 </body>
 </html>
