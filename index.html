@@ -42,6 +42,11 @@ let BW=320, BH=240;   // recomputed responsively in fitScreen() to fill the wind
 // without also adjusting the scale would make the canvas overflow or gap on that axis, which
 // is exactly the bug this comment is here to warn future edits away from reintroducing.
 const MIN_WORLD=80, MAX_WORLD=2000;
+// Buffer pixels per world unit. Physics, collision and the camera all stay in world units, so
+// raising this adds sprite detail without touching gameplay: the world still shows the same
+// amount of terrain, each unit of it is just drawn on a U-times-finer grid. Sprite art is
+// authored on that grid, so changing U means re-authoring every sprite - it is not a knob.
+const U=2;
 const cv=document.getElementById('screen');
 const ctx=cv.getContext('2d');
 const buf=document.createElement('canvas'); buf.width=BW; buf.height=BH;
@@ -51,7 +56,7 @@ const g=buf.getContext('2d');
 // resize cv (CSS size for layout, device-pixel size for a crisp nearest-neighbor scale).
 // The device-pixel scale MUST be a whole number, or nearest-neighbor scaling maps
 // source pixels to an uneven number of screen pixels and the image shimmers/blurs.
-let PXS=1;   // device pixels per buf pixel — used to place text at native resolution
+let PXS=1;   // device pixels per WORLD unit — used to place text (laid out in world coords) at native resolution
 function fitScreen(){
   // must be the TRUE devicePixelRatio (uncapped): cv.width and cv.style.width both derive
   // from it, so backing-store pixels map exactly 1:1 to physical screen pixels. Capping this
@@ -71,15 +76,20 @@ function fitScreen(){
   // (e.g. an ideal scale of 3.97 floors to 3, discarding ~25% of the window) - that's the big
   // blue margin. Rounding both dimensions against one fixed s bounds the leftover gap to at
   // most half a scale-step per axis: a couple of pixels, not a quarter of the screen.
-  const s=Math.max(1,Math.round(viewH*dpr/300));
-  PXS=s;
-  BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewW*dpr/s)));
-  BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewH*dpr/s)));
-  buf.width=BW; buf.height=BH;
-  cv.width=BW*s;
-  cv.height=BH*s;
-  cv.style.width=(BW*s/dpr)+'px';
-  cv.style.height=(BH*s/dpr)+'px';
+  // s is device pixels per BUFFER pixel, and one world unit is U buffer pixels, so the zoom
+  // level (device px per world unit) is quantised to multiples of U rather than to every
+  // integer as it was before U existed. The visible world therefore lands near the 300-unit
+  // target rather than always exactly on it - a coarser ladder is the price of the finer grid.
+  const s=Math.max(1,Math.round(viewH*dpr/(300*U)));
+  PXS=s*U;
+  BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewW*dpr/PXS)));
+  BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewH*dpr/PXS)));
+  buf.width=BW*U; buf.height=BH*U;
+  g.imageSmoothingEnabled=false;   // resizing a canvas resets its context state, so re-assert it
+  cv.width=BW*PXS;
+  cv.height=BH*PXS;
+  cv.style.width=(BW*PXS/dpr)+'px';
+  cv.style.height=(BH*PXS/dpr)+'px';
   ctx.imageSmoothingEnabled=false;
 }
 fitScreen();
@@ -97,7 +107,7 @@ const SPIN_RATE=7.5, FLIP_RATE=6.0;   // radians/sec while holding a trick direc
 
 // ---------- state ----------
 let gamestate='title';           // title | play | over
-let P, yeti, obstacles, cells, tracks, particles, popups, live, style, nextYetiAt, keys={};
+let P, yeti, obstacles, cells, tracks, prints, particles, popups, live, style, nextYetiAt, keys={};
 let timeNow=0;
 
 // ---------- local high score (this device only, no server) ----------
@@ -129,9 +139,9 @@ function toggleChar(){
 
 function reset(){
   P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0,spin:0,flip:0,
-     spinsPaid:0,flipsPaid:0};
-  yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0};
-  obstacles=[]; cells=new Set(); tracks=[]; particles=[]; popups=[]; live=null;
+     spinsPaid:0,flipsPaid:0,landT:0};
+  yeti={active:false,x:0,y:0,state:'chase',t:0,eatT:0,step:0};
+  obstacles=[]; cells=new Set(); tracks=[]; prints=[]; particles=[]; popups=[]; live=null;
   style=0; nextYetiAt=YETI_AT;
   newBestDist=false; newBestStyle=false;
 }
@@ -252,7 +262,8 @@ function spawnCell(cx,cy){
   else if(t<0.68) type='rock';
   else if(t<0.80) type='stump';
   else type='ramp';
-  obstacles.push({x:ox,y:oy,type});
+  // v picks between the art variants for that type, so a hillside of trees stops looking stamped
+  obstacles.push({x:ox,y:oy,type,v:(Math.random()*4)|0});
 }
 function spawnAround(camX,camY){
   const x0=Math.floor((camX-120)/CELL), x1=Math.floor((camX+BW+120)/CELL);
@@ -325,6 +336,10 @@ function crash(){
 
 // ---------- update ----------
 const ANGLES=[-1.30,-0.55,0,0.55,1.30];
+// Shared by the animation and by the footprint/snow-spray emitter, so a print always lands on the
+// frame the foot is actually down. The stride quickens as the yeti winds up, matching its speed
+// ramp in the chase branch below.
+function yetiRunPhase(){ return yeti.t*(11+Math.min(1,yeti.t/15)*5); }
 function update(dt){
   timeNow+=dt;
   if(gamestate!=='play') return;
@@ -335,6 +350,7 @@ function update(dt){
     if(P.crashT<=0){ P.state='ski'; P.invT=1.0; P.speed=30; }
   }else if(P.state==='ski'){
     P.invT=Math.max(0,P.invT-dt);
+    P.landT=Math.max(0,P.landT-dt);
     const a=ANGLES[P.dir+2];
     if(P.z<=0){                        // steering/speed only change with your feet on the snow
       if(Math.abs(P.dir)===2){
@@ -374,6 +390,7 @@ function update(dt){
         const air=Math.floor(P.airT*30);
         style+=air; liveScore(air,'AIR'); releaseLive();
         P.spin=0; P.flip=0; P.airT=0; P.spinsPaid=0; P.flipsPaid=0;
+        P.landT=0.20;                              // squash-and-stretch on touchdown
         puff(P.x,P.y,5,50); sndLand();
       }
     }
@@ -382,6 +399,13 @@ function update(dt){
     if(P.z<=0 && P.speed>10){
       tracks.push({x:P.x,y:P.y});
       if(tracks.length>200) tracks.shift();
+    }
+    // hard sideways skid: throw snow off the edges. The skid already scrubs your speed away
+    // (see the |dir|===2 branch above) but until now it did so with nothing on screen to show it.
+    if(P.z<=0 && Math.abs(P.dir)===2 && P.speed>25 && Math.random()<dt*30){
+      particles.push({x:P.x-Math.sign(P.dir)*3, y:P.y-1,
+        vx:-Math.sign(P.dir)*(40+Math.random()*60), vy:-20-Math.random()*30,
+        life:0.3+Math.random()*0.25});
     }
 
     // collisions
@@ -417,6 +441,15 @@ function update(dt){
       const dx=P.x-yeti.x, dy=P.y-yeti.y, d=Math.hypot(dx,dy)||1;
       const v=YETIV+Math.min(30,yeti.t*2);            // slowly gets angrier
       yeti.x+=dx/d*v*dt; yeti.y+=dy/d*v*dt;
+      // every half-cycle of the run animation is one foot landing: stamp a print and kick up snow
+      const half=Math.floor(yetiRunPhase()/Math.PI);
+      if(half!==yeti.step){
+        yeti.step=half;
+        const side=(half%2)?1:-1;
+        prints.push({x:yeti.x+side*4,y:yeti.y,life:2.2});
+        if(prints.length>60) prints.shift();
+        puff(yeti.x+side*4,yeti.y,2,26);
+      }
       if(d>380){ yeti.active=false; nextYetiAt=meters+YETI_AT; }  // you escaped
       else if(d<8 && P.state!=='eaten'){
         P.state='eaten'; yeti.state='eat'; yeti.eatT=0;
@@ -434,6 +467,8 @@ function update(dt){
   // --- particles ---
   for(const p of particles){ p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=120*dt; p.life-=dt; }
   particles=particles.filter(p=>p.life>0);
+  for(const f of prints) f.life-=dt;
+  prints=prints.filter(f=>f.life>0);
 
   // --- score popups ---
   // safety net: cut the live tally loose if the run ends mid-flight (eaten by the yeti), since
@@ -453,138 +488,450 @@ function update(dt){
   popups=popups.filter(p=>p.attached||p.life>0);
 }
 
-// ---------- drawing ----------
-function drawTree(x,y){
-  g.fillStyle='#7a4a20'; g.fillRect(x-1,y-2,2,3);
-  g.fillStyle='#1c6b2a'; tri(x,y-2,14,8);
-  g.fillStyle='#2a8a3a'; tri(x,y-7,10,7); tri(x,y-11,7,6);
-  g.fillStyle='#ffffff'; g.fillRect(x-1,y-17,2,2);
+// ---------- sprite cache ----------
+// Art lives on the U-times-finer buffer grid and is baked into offscreen canvases once at load,
+// so a frame costs one drawImage per part instead of a dozen fillRects - the extra resolution is
+// cheaper to draw than the vector shapes it replaces. Characters are jointed: torso, head and
+// limbs are separate parts that the animation code positions every frame, which is what makes
+// pose changes and run cycles cheap to add without re-authoring whole sprite sheets.
+function pal(map){
+  const o={};
+  for(const k in map){
+    const s=map[k];
+    o[k]=[parseInt(s.slice(1,3),16),parseInt(s.slice(3,5),16),parseInt(s.slice(5,7),16),
+          s.length>7?parseInt(s.slice(7,9),16):255];
+  }
+  return o;
 }
-function tri(cx,baseY,w,h){
-  g.beginPath(); g.moveTo(cx-w/2,baseY); g.lineTo(cx+w/2,baseY); g.lineTo(cx,baseY-h); g.closePath(); g.fill();
+function rep(row,n){ return Array(n).fill(row); }
+// (ax,ay) is the anchor: the pixel inside the art that lands on the position passed to blit().
+function makeSprite(rows,palette,ax,ay){
+  const w=rows[0].length, h=rows.length;
+  for(let j=0;j<h;j++){                 // a miscounted row silently shears the whole sprite
+    if(rows[j].length!==w) throw new Error('sprite row '+j+' is '+rows[j].length+' wide, expected '+w);
+  }
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  const x=c.getContext('2d'), img=x.createImageData(w,h), d=img.data;
+  for(let j=0;j<h;j++) for(let i=0;i<w;i++){
+    const col=palette[rows[j][i]];
+    if(!col) continue;
+    const o=(j*w+i)*4;
+    d[o]=col[0]; d[o+1]=col[1]; d[o+2]=col[2]; d[o+3]=col[3];
+  }
+  x.putImageData(img,0,0);
+  return {c,w,h,ax,ay};
 }
-function drawDeadTree(x,y){
-  g.fillStyle='#8a6a4a';
-  g.fillRect(x-1,y-12,2,13);
-  g.fillRect(x-5,y-9,5,1); g.fillRect(x-5,y-11,1,2);
-  g.fillRect(x+1,y-7,5,1); g.fillRect(x+5,y-9,1,2);
+// Scenery is all cones, slabs and stripes, which rect/triangle calls describe far more compactly
+// than pixel rows would - but it is baked into the same kind of cached canvas.
+function paintSprite(w,h,ax,ay,fn){
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  const x=c.getContext('2d'); x.imageSmoothingEnabled=false;
+  fn(x);
+  return {c,w,h,ax,ay};
 }
-function drawRock(x,y){
-  g.fillStyle='#9098a0'; g.fillRect(x-5,y-4,10,5); g.fillRect(x-3,y-6,6,2);
-  g.fillStyle='#b8c0c8'; g.fillRect(x-3,y-5,3,2);
-  g.fillStyle='#6a7078'; g.fillRect(x-5,y,10,1);
+function ptri(p,cx,baseY,w,h){
+  p.beginPath(); p.moveTo(cx-w/2,baseY); p.lineTo(cx+w/2,baseY); p.lineTo(cx,baseY-h); p.closePath(); p.fill();
 }
-function drawStump(x,y){
-  g.fillStyle='#8a5a2a'; g.fillRect(x-3,y-4,6,5);
-  g.fillStyle='#c8a06a'; g.fillRect(x-3,y-5,6,2);
-  g.fillStyle='#5a3a1a'; g.fillRect(x-3,y,6,1);
+function blit(sp,x,y){ g.drawImage(sp.c, Math.round(x)-sp.ax, Math.round(y)-sp.ay); }
+
+// ---------- sprite art ----------
+const SP={};
+// -- skier: jointed, so the same parts serve the carve, air and crash poses --
+const P_GEAR=pal({k:'#4a3800',y:'#c89a00',Y:'#ffd84a',G:'#2b2f42',s:'#8a9099',b:'#6a7078',t:'#55595f',B:'#2b2f42'});
+SP.ski =makeSprite(['.kk.','kYYk',...rep('kYyk',15),'kYYk','.kk.'],P_GEAR,2,2);
+SP.pole=makeSprite(['.GG.','.GG.','.GG.',...rep('.ss.',12),'bssb','.ss.','.ss.','.tt.'],P_GEAR,2,3);
+SP.board=makeSprite([
+  '....kkkk....',
+  '..kkYYYYkk..',
+  '.kYYYyyYYYk.',
+  ...rep('.kYYyyyyYYk.',5),
+  '.kYBBBBBBYk.','.kYBBBBBBYk.',
+  ...rep('.kYYyyyyYYk.',4),
+  '.kYBBBBBBYk.','.kYBBBBBBYk.',
+  ...rep('.kYYyyyyYYk.',4),
+  '.kYYYyyYYYk.',
+  '..kkYYYYkk..',
+  '....kkkk....',
+],P_GEAR,6,4);
+const TORSO_ROWS=[
+  '...oooooooo...',
+  '..oJJjjjjkko..',
+  '.oJJjjjjjjkko.',
+  ...rep('.oJjjjzzjjjko.',8),
+  '.okkjjzzjjkko.',
+  '.okkkkkkkkkko.',
+  '..oppppppppo..',
+  '..oppppppppo..',
+  '...oooooooo...',
+];
+const ARM_ROWS=['.oooo.',...rep('oJjjko',5),'okkkko','.oMMo.','.oMMo.','..oo..'];
+const HEAD_ROWS=[
+  '....kkkk....',
+  '..kkHHHHkk..',
+  '.kHHHHHHHHk.',
+  '.kHHhhhhhhk.',
+  '.khhhhhhhhk.',
+  '.kkhhhhhhkk.',
+  '..oooooooo..',
+  '..oSSsssdo..',
+  '..oSssssdo..',
+  '..ogglllgo..',   // goggles
+  '..oglLllgo..',
+  '..oggggggo..',
+  '..oSssssdo..',
+  '..osssssdo..',
+  '..ossssddo..',
+  '...oooooo...',
+];
+// Spinning is a real rotation about the vertical axis, so it needs the other two views of the
+// character, not just a squash. The back is the front art with the zip painted out; the profile
+// is its own narrower art. See drawSkier for how the view and its width are picked.
+const TORSO_SIDE_ROWS=[
+  '..oooo..',
+  '.oJjjko.',
+  ...rep('oJJjjjko',10),
+  'okkkkkko',
+  '.oppppo.',
+  '.oppppo.',
+  '..oooo..',
+];
+const HEAD_BACK_ROWS=[
+  '....kkkk....',
+  '..kkHHHHkk..',
+  '.kHHHHHHHHk.',
+  '.kHHhhhhhhk.',
+  '.khhhhhhhhk.',
+  '.kkhhhhhhkk.',
+  '..oooooooo..',
+  ...rep('..onnnnnno..',8),
+  '...oooooo...',
+];
+const HEAD_SIDE_ROWS=[
+  '...kkkk...',
+  '.kkHHHHkk.',
+  'kHHHHHHHHk',
+  'kHHhhhhhhk',
+  'khhhhhhhhk',
+  'kkhhhhhhkk',
+  '.oooooooo.',
+  '.onnssssdo',
+  '.onnsssssd',   // the nose breaks the outline, which is what makes it read as a profile
+  '.oggllllgo',
+  '.ogglLllgo',
+  '.oggggggdo',
+  '.onnsssssd',
+  '.onnssssdo',
+  '.onnsssddo',
+  '..oooooo..',
+];
+// One art set, two palettes: skier and snowboarder differ only in jacket and hat colour.
+function kitFor(jacket,hat){
+  const body=pal({o:jacket.o,k:jacket.k,j:jacket.j,J:jacket.J,z:jacket.z,p:'#26304a',M:'#2b2f42'});
+  const back=pal({o:jacket.o,k:jacket.k,j:jacket.j,J:jacket.J,z:jacket.j,p:'#26304a',M:'#2b2f42'});
+  const headPal=h=>pal({o:'#3a2418',k:hat.k,h:hat.h,H:hat.H,s:'#eab088',S:'#f7cfa8',d:'#c78a66',
+                        g:'#2a2e3c',l:'#7ec8f0',L:'#ffffff',n:h});
+  const head=headPal('#5a4030');
+  return {torso:    makeSprite(TORSO_ROWS,body,7,16),
+          torsoBack:makeSprite(TORSO_ROWS,back,7,16),
+          torsoSide:makeSprite(TORSO_SIDE_ROWS,body,4,16),
+          arm:      makeSprite(ARM_ROWS,body,3,1),
+          head:     makeSprite(HEAD_ROWS,head,6,16),
+          headBack: makeSprite(HEAD_BACK_ROWS,head,6,16),
+          headSide: makeSprite(HEAD_SIDE_ROWS,head,5,16)};
 }
+const KIT={
+  ski:  kitFor({o:'#101c4a',k:'#1e3490',j:'#3050cc',J:'#5878e8',z:'#c8d4ff'},
+               {k:'#8a1c1c',h:'#cc3030',H:'#e85858'}),
+  board:kitFor({o:'#0a3020',k:'#146840',j:'#20a060',J:'#40c880',z:'#d8ffe8'},
+               {k:'#9a7000',h:'#f0c020',H:'#ffe070'}),
+};
+// -- yeti: outlined throughout, because white fur on white snow had no silhouette at all, and
+// tapered from shoulder to waist so the outline reads as a body rather than a box --
+const YETI_BODY=pal({o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',b:'#f2f7ff',C:'#3a4050'});
+// The silhouette steps in and out by a pixel every few rows: that ragged edge is what makes the
+// outline read as fur rather than as a fridge, which is exactly how the first pass looked.
+const Y_WIDE ='ooFFFFFFFFffffffffffssssssssoo';
+const Y_NARROW='.ooFFFFFFFffffffffffsssssssoo.';
+const Y_BELLY ='ooFFFFFFffbbbbbbbbbbssssssssoo';
+const Y_BELLYN='.ooFFFFFffbbbbbbbbbbsssssssoo.';
+SP.yetiTorso=makeSprite([
+  '......oooooooooooooooooo......',
+  '....ooFFFFFffffffffsssssoo....',
+  '..ooFFFFFFFffffffffsssssssoo..',
+  Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW,
+  Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLYN,
+  '..ooFFFFFFFffffffffsssssssoo..',
+  '..ooFFFFFFFffffffffsssssssoo..',
+  '...ooFFFFFFffffffffssssssoo...',
+  '...ooFFFFFFffffffffssssssoo...',
+  '...ooFFFFFFffffffffssssssoo...',
+  '...oooooooooooooooooooooooo...',
+],YETI_BODY,15,32);
+SP.yetiArm=makeSprite([
+  '..oooooo..',
+  ...rep('.oFFffsso.',4),'oFFffffsso',
+  ...rep('.oFFffsso.',4),'oFFffffsso',
+  ...rep('.oFFffsso.',3),
+  'oFFffffsso','oFFffffsso','oFFffffsso',
+  'oCCCCCCCCo','.CC.CC.CC.',
+],YETI_BODY,5,2);
+SP.yetiLeg=makeSprite([
+  '..oooooooo..',
+  ...rep('.oFFffffsso.',6),'oFFffffffsso',
+  ...rep('.oFFffffsso.',6),
+  'oFFffffffsso','oFFffffffsso','oFFffffffsso',
+  'oCCCCCCCCCCo','.CC..CC..CC.',
+],YETI_BODY,6,2);
+const Y_HEAD_MID='ooFFFFFffffffffsssssoo';
+const YETI_HEAD_ROWS=[
+  '...oooooooooooooooo...',
+  '.ooFFFFffffffffssssoo.',
+  Y_HEAD_MID,
+  'ooFFFFggggggggggssssoo',   // heavy brow ridge, shading the sockets below it
+  'ooFFFFeeeeffeeeessssoo',   // eyes
+  'ooFFFFWeeeffWeeessssoo',
+  'ooFFFFeeeeffeeeessssoo',
+  Y_HEAD_MID,
+  'ooFFFFmmmmmmmmmmssssoo',   // muzzle, which the animated mouth is drawn over
+  'ooFFFFmmmmmmmmmmssssoo',
+  Y_HEAD_MID,
+  Y_HEAD_MID,
+  '.ooFFFFffffffffssssoo.',
+  '..oooooooooooooooooo..',
+];
+const Y_HEAD_PAL={o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',m:'#c3cfdd'};
+SP.yetiHead    =makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
+  {g:'#9fadc0',e:'#101018',W:'#ffffff'})),11,14);
+// Palette swap instead of a second drawing: the yeti's eyes redden as it closes in, giving the
+// speed ramp in update() something you can actually see.
+SP.yetiHeadRage=makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
+  {g:'#c49a9a',e:'#e02020',W:'#ffd0d0'})),11,14);
+// -- scenery --
+// Each scenery type is a small family of variants rather than one stamp. The obstacle's v field
+// (assigned at spawn) picks one, so a hillside no longer looks like the same tree photocopied.
+SP.tree=[0,1,2].map(k=>paintSprite(28,38,14,36,p=>{
+  const lean=[0,1,-1][k], tall=[0,2,-2][k];
+  p.fillStyle='#3a2210'; p.fillRect(11,26,6,12);
+  p.fillStyle='#6b3f1c'; p.fillRect(12,26,3,11);
+  for(const [base,w,h] of [[38,28,15+tall],[29,21,13+tall],[21-tall,15,12]]){
+    const cx=14+lean*(38-base)/14;
+    p.fillStyle='#0d3a1e'; ptri(p,cx,base,w,h);            // outline pass
+    p.fillStyle='#1c6b2a'; ptri(p,cx,base-1,w-3,h-1);
+    p.fillStyle='#2f9440'; ptri(p,cx-1.5,base-2,w-9,h-3);  // lit side, offset toward the light
+  }
+  p.fillStyle='#eef6ff';
+  p.fillRect(13+lean,3-tall,3,3);
+  if(k!==2){ p.fillRect(9,19,4,1); p.fillRect(16,20,4,1); }
+  p.fillRect(5,28,5,1); p.fillRect(19,29,5,1);
+}));
+SP.deadtree=[0,1].map(k=>paintSprite(24,30,12,28,p=>{
+  // stepped diagonals rather than the right-angled bars of the first pass, which read as a cactus
+  const limb=(x0,y0,dx,n,th)=>{ for(let i=0;i<n;i++) p.fillRect(x0+dx*i,y0-i,th,th); };
+  const m=k?-1:1;
+  p.fillStyle='#4a3520';
+  p.fillRect(9,2,6,28);
+  limb(9,17,-m,8,3); limb(12,23,m,7,3); limb(10,8,-m,5,2); limb(12,12,m,4,2);
+  p.fillStyle='#8a6a4a';
+  p.fillRect(10,3,2,26);
+  limb(9,16,-m,7,1); limb(12,22,m,6,1); limb(10,7,-m,4,1); limb(12,11,m,3,1);
+  p.fillStyle='#eef6ff';
+  p.fillRect(9,1,4,1); p.fillRect(12-m*8,10,3,1); p.fillRect(12+m*4,18,3,1);
+}));
+SP.rock=[0,1].map(k=>paintSprite(24,16,12,14,p=>{
+  const w=k?18:22, x0=k?3:1, cap=k?3:5;
+  p.fillStyle='#5c646e'; p.fillRect(x0,4,w,11); p.fillRect(x0+3,1,w-7,4);
+  p.fillStyle='#9098a0'; p.fillRect(x0+1,5,w-2,9); p.fillRect(x0+4,2,w-9,4);
+  p.fillStyle='#b8c0c8'; p.fillRect(x0+3,3,8,4); p.fillRect(x0+2,6,5,3);
+  p.fillStyle='#7a828c'; p.fillRect(x0+w-9,7,8,6);
+  p.fillStyle='#eef6ff'; p.fillRect(x0+cap,1,w-11,2); p.fillRect(x0+3,2,4,1);
+  p.fillStyle='#aab6c6'; p.fillRect(x0,15,w,1);
+}));
+SP.stump=[0,1].map(k=>paintSprite(16,14,8,12,p=>{
+  p.fillStyle='#4a2c12'; p.fillRect(1,2,14,12);
+  p.fillStyle='#8a5a2a'; p.fillRect(2,3,12,10);
+  p.fillStyle='#c8a06a'; p.fillRect(2,1,12,4);
+  p.fillStyle='#8a5a2a'; p.fillRect(4+k*2,2,6,2);
+  p.fillStyle='#c8a06a'; p.fillRect(6+k*2,3,2,1);
+  p.fillStyle='#5a3a1a'; p.fillRect(2,12,12,2);
+  if(k) p.fillRect(1,5,2,7);            // a split down one side
+}));
 const RAMP_COLORS=['#e03030','#f07020','#f0c020','#60c040','#20a0a0','#3070e0','#7040c0','#c040a0'];
-function drawRamp(x,y){
-  for(let i=0;i<RAMP_COLORS.length;i++){ g.fillStyle=RAMP_COLORS[i]; g.fillRect(x-8+i*2,y-3,2,3); }
-  g.fillStyle='#ffffff'; g.fillRect(x-6,y-5,12,2);
-  g.fillStyle='#90b0d0'; g.fillRect(x-8,y,16,1); g.fillRect(x-8,y-3,1,3); g.fillRect(x+7,y-3,1,3);
-}
+SP.ramp=paintSprite(36,16,18,13,p=>{
+  for(let i=0;i<RAMP_COLORS.length;i++){ p.fillStyle=RAMP_COLORS[i]; p.fillRect(2+i*4,6,4,7); }
+  p.globalAlpha=0.28; p.fillStyle='#000000'; p.fillRect(2,10,32,3); p.globalAlpha=1;
+  p.fillStyle='#ffffff'; p.fillRect(1,2,34,4);
+  p.fillStyle='#c8d8e8'; p.fillRect(1,5,34,1);
+  p.fillStyle='#5a6470'; p.fillRect(0,13,36,2); p.fillRect(0,6,2,7); p.fillRect(34,6,2,7);
+});
+
+// ---------- drawing ----------
+// All of these take BUFFER pixel coordinates; the caller converts from world units.
 function drawSkier(x,y){
   const board=equip==='board';
-  const jacket=board?'#20a060':'#3050cc', hat=board?'#f0c020':'#cc3030';
-  const yd=y-P.z;
-  if(P.z>0){ g.fillStyle='rgba(120,140,160,.45)'; g.fillRect(x-4,y-1,8,2); }
-  if(P.state==='eaten') return;
-  if(P.state==='crash'){
-    g.fillStyle='#e0b000';
-    if(board){                                  // single kicked-up board
-      g.save(); g.translate(x,yd-2); g.rotate(0.6); g.fillRect(-8,-1,16,3); g.restore();
-    }else{                                       // crossed skis
-      g.save(); g.translate(x,yd-2);
-      g.rotate(0.5);  g.fillRect(-7,-1,14,2);
-      g.rotate(-1.0); g.fillRect(-7,-1,14,2);
-      g.restore();
-    }
-    g.fillStyle=jacket; g.fillRect(x-3,yd-7,6,5);
-    g.fillStyle='#eab088'; g.fillRect(x-2,yd-10,4,3);
-    g.fillStyle=hat; g.fillRect(x-2,yd-12,4,2);
-    return;
+  const kit=board?KIT.board:KIT.ski;
+  const yd=y-P.z*U;
+  if(P.z>0){                                    // ground shadow, shrinking as you climb
+    const k=Math.max(0.35,1-P.z/90), w=Math.round(20*k);
+    g.fillStyle='rgba(120,140,160,.40)';
+    g.fillRect(x-(w>>1),y-2,w,4);
   }
-  const a=ANGLES[P.dir+2];
+  if(P.state==='eaten') return;
+  if(P.state==='crash'){ drawCrash(x,yd,kit,board); return; }
+  const a=ANGLES[P.dir+2], air=P.z>0;
+  const tuck=!air && keys['f'] && P.speed>60;   // turbo: fold up small and go
+  if(tuck) speedLines(x,y);
   g.save(); g.translate(x,yd); g.rotate(-a);
-  // spin (← →) turns the character horizontally, so it's simulated with a width squash
-  // (like a figure skater viewed from the front) rather than an in-plane rotate, which
-  // would read as a sideways cartwheel. flip (↑ ↓) is a real front/back somersault, so a
-  // height squash is correct there.
-  if(P.z>0){ g.scale(Math.cos(P.spin),Math.cos(P.flip)); }
+
+  // A spin (← →) is a real rotation about the vertical axis, so which of the three views you
+  // see depends on the angle, and how wide it is drawn is that view's projected width. Front and
+  // back are widest at |cos|, the profile at |sin|; picking whichever is larger switches views
+  // exactly where the two projections are equal, so the width never jumps at the changeover.
+  // A negative scale mirrors the art, which is what turning past half a revolution should do.
+  const cs=Math.cos(P.spin), sn=Math.sin(P.spin);
+  const side=Math.abs(sn)>Math.abs(cs);
+  const torso=side?kit.torsoSide:(cs<0?kit.torsoBack:kit.torso);
+  const head =side?kit.headSide :(cs<0?kit.headBack :kit.head);
+  // flip (↑ ↓) is a front/back somersault seen edge-on, so a height squash is right for it.
+  // The landing squash rides on top of the same two scales.
+  const sq=P.landT/0.20;
+  g.scale((side?sn:cs)*(1+sq*0.35), Math.cos(P.flip)*(1-sq*0.40));
+
   if(board){
     // snowboard: one wide board under both feet, pointed downhill like skis (the rider's
     // stance is sideways-on, but the board itself tracks the direction of travel), no poles
-    g.fillStyle='#e0b000'; g.fillRect(-3,-1,6,11);
+    blit(SP.board,0,0);
   }else{
-    const splay=P.z>0?0.45:0;
-    g.fillStyle='#e0b000';
-    g.save(); g.rotate(-splay); g.fillRect(-4,-1,2,9); g.restore();
-    g.save(); g.rotate( splay); g.fillRect( 2,-1,2,9); g.restore();
-    g.fillStyle='#707070'; g.fillRect(-6,-5,1,8); g.fillRect(5,-5,1,8);   // poles
+    const splay=air?0.45:(tuck?0.05:0);
+    g.save(); g.rotate(-splay); blit(SP.ski,-6,0); g.restore();
+    g.save(); g.rotate( splay); blit(SP.ski, 6,0); g.restore();
   }
-  // body
-  g.fillStyle=jacket; g.fillRect(-3,-8,6,6);
-  if(P.z>0){ g.fillRect(-5,-11,2,4); g.fillRect(3,-11,2,4); }       // arms up
-  else     { g.fillRect(-5,-7,2,3);  g.fillRect(3,-7,2,3);  }
-  // head + hat
-  g.fillStyle='#eab088'; g.fillRect(-2,-12,4,4);
-  g.fillStyle=hat; g.fillRect(-2,-14,4,2);
+  // Everything above the hips leans into the turn and folds down in a tuck. Rotating about the
+  // hip rather than the feet keeps the skis flat on the snow while the body angles over them.
+  const lean=air?0:P.dir*0.13, drop=tuck?4:0;
+  g.save(); g.translate(0,-4+drop); g.rotate(lean);
+  blit(torso,0,0);
+  // arms swing wide overhead in the air, tuck back along the body under turbo; each still grips
+  // its pole, so the poles follow wherever the hands go
+  const armA=air?2.0:(tuck?-0.55:0.20);
+  // Seen in profile the shoulders are separated front-to-back, not left-to-right, so they very
+  // nearly overlap. Leaving them a full body-width apart is what made the first pass read as a
+  // front view that had merely been squeezed.
+  const shoulder=side?2:7;
+  for(const sgn of [-1,1]){
+    g.save(); g.translate(sgn*shoulder,-11); g.rotate(-sgn*armA);
+    blit(kit.arm,0,0);
+    if(!board) blit(SP.pole,sgn*2,7);
+    g.restore();
+  }
+  blit(head,0,-12);
+  g.restore();
   g.restore();
 }
-function drawYeti(x,y){
-  const step=yeti.state==='chase'?Math.sin(yeti.t*14)*2:0;
-  // legs + feet
-  g.fillStyle='#b8c2d0';
-  g.fillRect(x-6,y-6+Math.max(0,step),5,6-Math.max(0,step));
-  g.fillRect(x+1,y-6+Math.max(0,-step),5,6-Math.max(0,-step));
-  // body
-  g.fillStyle='#dfe6ee'; g.fillRect(x-8,y-22,16,17);
-  g.fillStyle='#c8d2de'; g.fillRect(x-8,y-22,3,17);
-  // arms
-  const armY=yeti.state==='eat'?-26:-20;
-  g.fillStyle='#dfe6ee'; g.fillRect(x-12,y+armY,4,11); g.fillRect(x+8,y+armY,4,11);
-  // head
-  g.fillStyle='#dfe6ee'; g.fillRect(x-6,y-28,12,7);
-  // face
-  g.fillStyle='#101018'; g.fillRect(x-4,y-26,2,2); g.fillRect(x+2,y-26,2,2);
-  if(yeti.state==='eat'){
-    const chomp=(Math.floor(yeti.eatT*6)%2)*2;
-    g.fillStyle='#a02020'; g.fillRect(x-3,y-23,6,2+chomp);
-    g.fillStyle='#ffffff'; g.fillRect(x-3,y-23,1,1); g.fillRect(x+2,y-23,1,1);
+// The wipeout runs as three beats over the 1.3s crash timer rather than one frozen pose: you
+// tumble, you land in a heap, then you push yourself back upright as control returns.
+function drawCrash(x,yd,kit,board){
+  const el=1.3-P.crashT;
+  const rot=el<0.30 ? el*4.5 : (el<0.85 ? 1.35 : Math.max(0.55,1.35-(el-0.85)*1.8));
+  const fling=Math.min(1,el*3.5);
+  if(board){
+    g.save(); g.translate(x+fling*5,yd-8); g.rotate(0.6+fling*0.5); blit(SP.board,0,0); g.restore();
   }else{
-    g.fillStyle='#404858'; g.fillRect(x-2,y-23,4,1);
+    g.save(); g.translate(x-4-fling*7,yd-8); g.rotate(0.7+fling*0.8); blit(SP.ski,0,0); g.restore();
+    g.save(); g.translate(x+4+fling*5,yd-6); g.rotate(-0.9-fling*0.5); blit(SP.ski,0,0); g.restore();
+    g.save(); g.translate(x-fling*10,yd-2); g.rotate(1.5); blit(SP.pole,0,0); g.restore();
   }
-  // claws
-  g.fillStyle='#404858';
-  g.fillRect(x-12,y+armY+11,4,1); g.fillRect(x+8,y+armY+11,4,1);
+  g.save(); g.translate(x,yd); g.rotate(rot);
+  blit(kit.torso,0,-4);
+  g.save(); g.translate(-7,-15); g.rotate(1.1); blit(kit.arm,0,0); g.restore();
+  g.save(); g.translate( 7,-15); g.rotate(-2.0); blit(kit.arm,0,0); g.restore();
+  blit(kit.head,0,-16);
+  g.restore();
+}
+// Backdraft streaks while turbo is held — the only cue for it used to be a word in the HUD.
+function speedLines(x,y){
+  g.fillStyle='rgba(150,175,200,.55)';
+  for(let i=0;i<5;i++){
+    const o=(i*37)%11;
+    const ly=y-34-((timeNow*260+i*29)%46);
+    g.fillRect(x-16+o*3+(i&1?22:0), Math.round(ly), 1, 7);
+  }
+}
+function drawYeti(x,y){
+  const run=yeti.state==='chase', eat=yeti.state==='eat';
+  // update() ramps the yeti's speed with yeti.t but nothing showed it; tie the visuals to the
+  // same clock so a yeti that has been chasing you for a while visibly winds up.
+  const rage=Math.min(1,yeti.t/15);
+  const ph=run?Math.sin(yetiRunPhase()):0;
+  const bob=run?Math.round(Math.abs(ph)*2)-1:0;
+  const lift=Math.round(ph*5);
+  // It arrives already sprinting, so the entrance roar is a pose held over the first second of
+  // the chase rather than a pause: standing still would just let the camera leave it behind.
+  const roar=run && yeti.t<1.0;
+  // stacked rects rather than one slab, so the shadow reads as a pool under the feet
+  g.fillStyle='rgba(96,116,142,.22)';
+  g.fillRect(x-10,y-3,20,5); g.fillRect(x-13,y-2,26,3);
+  // legs: one lifts while the other plants, and each strides forward as it swings
+  blit(SP.yetiLeg, x-8+Math.round(ph*2),  y-16-Math.max(0,lift));
+  blit(SP.yetiLeg, x+8-Math.round(ph*2),  y-16-Math.max(0,-lift));
+  blit(SP.yetiTorso, x, y-14+bob);
+  // arms counter-swing against the legs, and reach out to grab during the meal. The shoulder
+  // sits inside the torso outline, not level with its edge, so the join has no visible seam.
+  for(const sgn of [-1,1]){
+    g.save(); g.translate(x+sgn*12, y-40+bob);
+    // eating: both arms raised inward, holding the meal up to the mouth. Roaring: thrown wide.
+    g.rotate(eat ? sgn*2.6 : roar ? -sgn*2.3 : -sgn*(0.08+ph*sgn*0.30));
+    blit(SP.yetiArm,0,0);
+    g.restore();
+  }
+  const hy=y-45+bob-(roar?2:0);                 // head thrown back mid-roar
+  blit(rage>0.5?SP.yetiHeadRage:SP.yetiHead, x, hy);
+  const my=hy-6;   // lines up with the muzzle band baked into the head art
+  if(eat||roar){
+    // eating chomps on a timer; the roar holds its jaw wide and shudders
+    const gape=eat?(Math.floor(yeti.eatT*6)%2)*3:3+Math.round(Math.sin(yeti.t*30));
+    g.fillStyle='#101018'; g.fillRect(x-6,my,12,5+gape);
+    g.fillStyle='#a02020'; g.fillRect(x-4,my+2,8,2+gape);
+    g.fillStyle='#ffffff';
+    g.fillRect(x-6,my,2,2); g.fillRect(x+4,my,2,2);
+    g.fillRect(x-6,my+3+gape,2,2); g.fillRect(x+4,my+3+gape,2,2);
+  }else{
+    g.fillStyle='#4c5668'; g.fillRect(x-4,my+1,8,2);
+  }
 }
 
 function draw(){
-  g.fillStyle='#f4f8ff'; g.fillRect(0,0,BW,BH);
-  const camX=Math.round(P.x-BW/2), camY=Math.round(P.y-70);
+  const W=BW*U, H=BH*U;
+  g.fillStyle='#f4f8ff'; g.fillRect(0,0,W,H);
+  const camX=Math.round(P.x-BW/2), camY=Math.round(P.y-70);   // world units: culling and spawning
+  const bx=camX*U, by=camY*U;                                 // the same camera, in buffer pixels
 
-  // snow speckle
+  // snow speckle — one buffer pixel each, so the grain got finer with the resolution
   g.fillStyle='#dde6ee';
   const cx0=Math.floor(camX/CELL), cx1=Math.floor((camX+BW)/CELL);
   const cy0=Math.floor(camY/CELL), cy1=Math.floor((camY+BH)/CELL);
   for(let cy=cy0;cy<=cy1;cy++) for(let cx=cx0;cx<=cx1;cx++){
     let h=hash2(cx,cy);
-    for(let i=0;i<3;i++){
+    for(let i=0;i<6;i++){
       h=(h*1103515245+12345)>>>0;
-      const px=cx*CELL+(h%CELL); h=(h*1103515245+12345)>>>0;
-      const py=cy*CELL+(h%CELL);
-      g.fillRect(px-camX,py-camY,1,1);
+      const px=cx*CELL*U+(h%(CELL*U)); h=(h*1103515245+12345)>>>0;
+      const py=cy*CELL*U+(h%(CELL*U));
+      g.fillRect(px-bx,py-by,1,1);
     }
   }
 
   // ski tracks
   g.fillStyle='#c4d2e0';
   for(const t of tracks){
-    const tx=Math.round(t.x-camX), ty=Math.round(t.y-camY);
-    if(tx<-4||tx>BW+4||ty<-4||ty>BH+4) continue;
-    g.fillRect(tx-2,ty,1,1); g.fillRect(tx+2,ty,1,1);
+    const tx=Math.round(t.x*U)-bx, ty=Math.round(t.y*U)-by;
+    if(tx<-8||tx>W+8||ty<-8||ty>H+8) continue;
+    g.fillRect(tx-5,ty,2,3); g.fillRect(tx+3,ty,2,3);
+  }
+  // yeti footprints, pressed deeper than a ski track and filling back in as they age
+  for(const f of prints){
+    const fx=Math.round(f.x*U)-bx, fy=Math.round(f.y*U)-by;
+    if(fx<-10||fx>W+10||fy<-10||fy>H+10) continue;
+    g.fillStyle=f.life>1.1?'#a8b8cc':'#c6d4e2';
+    g.fillRect(fx-4,fy-2,8,5); g.fillRect(fx-3,fy-4,6,2);
   }
 
   // depth-sorted entities
@@ -597,34 +944,34 @@ function draw(){
   if(yeti.active) items.push({x:yeti.x,y:yeti.y,type:'yeti'});
   items.sort((a,b)=>a.y-b.y);
   for(const it of items){
-    const x=Math.round(it.x-camX), y=Math.round(it.y-camY);
+    const x=Math.round(it.x*U)-bx, y=Math.round(it.y*U)-by;
+    const set=SP[it.type];
     switch(it.type){
-      case 'tree':     drawTree(x,y); break;
-      case 'deadtree': drawDeadTree(x,y); break;
-      case 'rock':     drawRock(x,y); break;
-      case 'stump':    drawStump(x,y); break;
-      case 'ramp':     drawRamp(x,y); break;
+      case 'tree': case 'deadtree': case 'rock': case 'stump':
+                       blit(set[it.v%set.length],x,y); break;
+      case 'ramp':     blit(SP.ramp,x,y); break;
       case 'player':   drawSkier(x,y); break;
       case 'yeti':     drawYeti(x,y); break;
     }
   }
 
-  // particles
-  g.fillStyle='#ffffff';
-  for(const p of particles) g.fillRect(Math.round(p.x-camX),Math.round(p.y-camY),2,2);
+  // particles — thinning out as they fade, which the old fixed 2x2 dot could not do
+  for(const p of particles){
+    const k=Math.min(1,p.life*2.2), s=1+Math.round(k*2);
+    g.fillStyle=k>0.55?'#ffffff':'#e2ecf6';
+    g.fillRect(Math.round(p.x*U)-bx,Math.round(p.y*U)-by,s,s);
+  }
 
   // HUD box background (text is drawn later, at full device resolution, for crisp anti-aliasing
   // instead of blurry nearest-neighbor-scaled glyphs)
+  // (boxes are still laid out in world units, then scaled up to the buffer grid, so the numbers
+  // stay comparable with the world-unit text coordinates that get drawn over them below)
   const meters=Math.floor(Math.max(0,P.y/PX_PER_M));
-  g.fillStyle='rgba(255,255,255,.92)'; g.fillRect(BW-96,3,93,32);
-  g.strokeStyle='#334'; g.strokeRect(BW-95.5,3.5,92,31);
+  box(BW-96,3,93,32,'rgba(255,255,255,.92)');
 
   // desktop control hint box background (touch users have on-screen buttons instead)
   const showHint=!touchMode && gamestate!=='title';
-  if(showHint){
-    g.fillStyle='rgba(255,255,255,.82)'; g.fillRect(3,BH-42,132,39);
-    g.strokeStyle='#334'; g.strokeRect(3.5,BH-41.5,131,38);
-  }
+  if(showHint) box(3,BH-42,132,39,'rgba(255,255,255,.82)');
 
   let titleY=0, overY=0, pauseY=0;
   if(gamestate==='title')       titleY=panel(230,147);
@@ -682,11 +1029,18 @@ function ctext(str,x,y,size,opts){
   ctx.fillText(str, Math.round(x*PXS), Math.round(y*PXS));
   ctx.globalAlpha=oldAlpha;
 }
+// A filled, hairline-outlined box given in WORLD units. The border stays one buffer pixel wide
+// rather than scaling with U, so it reads as a crisp hairline instead of a chunky bar.
+function box(x,y,w,h,fill){
+  g.fillStyle=fill; g.fillRect(x*U,y*U,w*U,h*U);
+  g.strokeStyle='#334'; g.lineWidth=1;
+  g.strokeRect(x*U+0.5,y*U+0.5,w*U-1,h*U-1);
+}
 function panel(w,h){
   w=Math.min(w,BW-12); h=Math.min(h,BH-12);   // never wider/taller than the visible world
   const x=(BW-w)/2, y=(BH-h)/2;
-  g.fillStyle='rgba(244,248,255,.96)'; g.fillRect(x,y,w,h);
-  g.strokeStyle='#334'; g.strokeRect(x+.5,y+.5,w-1,h-1); g.strokeRect(x+2.5,y+2.5,w-5,h-5);
+  box(x,y,w,h,'rgba(244,248,255,.96)');
+  g.strokeRect(x*U+2.5,y*U+2.5,w*U-5,h*U-5);
   return y;
 }
 function drawTitleText(y){
@@ -728,7 +1082,8 @@ requestAnimationFrame(frame);
 // debug handle
 window.GAME={get P(){return P},get yeti(){return yeti},get obstacles(){return obstacles},
   get state(){return gamestate},set state(s){gamestate=s},reset,
-  get style(){return style},get popups(){return popups}};
+  get style(){return style},get popups(){return popups},
+  get sprites(){return SP},get kits(){return KIT}};
 </script>
 </body>
 </html>
