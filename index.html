@@ -185,6 +185,130 @@ const sndMunch =()=>{ for(let i=0;i<4;i++) beep(70+i*8,0.12,'sawtooth',0.16,i*0.
 const sndRoar  =()=>{ beep(55,0.6,'sawtooth',0.18); beep(48,0.6,'sawtooth',0.14,0.1); };
 const sndTrick =()=>{ beep(500,0.08,'square',0.12); beep(700,0.09,'square',0.12,0.07); beep(950,0.11,'square',0.12,0.14); };
 
+// ---------- music ----------
+// A chiptune bed built from the same oscillators as the effects above, so the page stays one
+// self-contained file with nothing to fetch. Notes are booked against the audio clock a quarter
+// of a second ahead rather than fired from the animation frame: WebAudio only keeps musical time
+// if a note is scheduled before it is due, and a dropped frame must never drop a beat.
+const MUS={next:0, step:0, level:0, muted:false, noise:null, bus:null};
+try{ MUS.muted=localStorage.getItem('skifree_mute')==='1'; }catch(e){}
+function toggleMute(){
+  MUS.muted=!MUS.muted;
+  try{ localStorage.setItem('skifree_mute',MUS.muted?'1':'0'); }catch(e){}
+}
+function hz(n){ return 440*Math.pow(2,(n-69)/12); }   // MIDI note number to frequency
+// Everything musical goes through one gain so the bed sits under the effects and can be balanced
+// (or silenced) in a single place instead of note by note.
+function musBus(){
+  if(!MUS.bus){ MUS.bus=AC.createGain(); MUS.bus.gain.value=0.5; MUS.bus.connect(AC.destination); }
+  return MUS.bus;
+}
+// i - VI - III - VII carries the cruise. The danger set swaps in Dm and a major E, and it is that
+// E's G# - the harmonic-minor leading tone - that gives the chase its edge over the same key.
+const PROG=[
+  [{r:45,n:[69,72,76]},{r:41,n:[65,69,72]},{r:48,n:[72,76,79]},{r:43,n:[67,71,74]}],
+  [{r:45,n:[69,72,76]},{r:41,n:[65,69,72]},{r:38,n:[62,65,69]},{r:40,n:[64,68,71]}],
+];
+const LEAD_CALM=[
+  69,null,72,null,76,null,74,null,
+  72,null,69,null,65,null,69,null,
+  76,null,79,null,76,null,72,null,
+  74,null,71,null,67,null,71,null,
+];
+// Same shape an octave up, but stuttered onto the off-beats and leaning on each chord's leading
+// tone, so it reads as the calm theme panicking rather than as a different piece of music.
+const LEAD_DANGER=[
+  81,81,null,80,81,null,76,null,
+  77,77,null,76,77,null,72,null,
+  74,74,null,73,74,null,69,null,
+  80,80,null,79,80,null,76,null,
+];
+const LEVELS=[
+  {bpm:112, prog:0, lead:LEAD_CALM,   drums:0, arp:2, lvol:0.055, bvol:0.10},
+  {bpm:132, prog:0, lead:LEAD_CALM,   drums:1, arp:1, lvol:0.060, bvol:0.12},
+  {bpm:154, prog:1, lead:LEAD_DANGER, drums:2, arp:1, lvol:0.075, bvol:0.14},
+];
+function tone(freq,t,dur,type,vol){
+  const o=AC.createOscillator(), ga=AC.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq,t);
+  // an instant attack onto a bare exponential tail is most of what makes an oscillator read
+  // as 8-bit; anything softer starts to sound like a synth pad instead
+  ga.gain.setValueAtTime(0.0001,t);
+  ga.gain.exponentialRampToValueAtTime(vol,t+0.006);
+  ga.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(ga); ga.connect(musBus());
+  o.start(t); o.stop(t+dur+0.02);
+}
+function noiseBuffer(){
+  if(!MUS.noise){
+    const n=Math.floor(AC.sampleRate*0.4);
+    MUS.noise=AC.createBuffer(1,n,AC.sampleRate);
+    const d=MUS.noise.getChannelData(0);
+    for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
+  }
+  return MUS.noise;
+}
+function drumNoise(t,dur,freq,q,vol){    // band-passed noise: snare when low and wide, hat when high
+  const s=AC.createBufferSource(); s.buffer=noiseBuffer();
+  const f=AC.createBiquadFilter(); f.type='bandpass'; f.frequency.value=freq; f.Q.value=q;
+  const ga=AC.createGain();
+  ga.gain.setValueAtTime(vol,t);
+  ga.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  s.connect(f); f.connect(ga); ga.connect(musBus());
+  s.start(t); s.stop(t+dur+0.02);
+}
+function kick(t,vol){                    // a sine dropped fast down its own pitch
+  const o=AC.createOscillator(), ga=AC.createGain();
+  o.type='sine';
+  o.frequency.setValueAtTime(150,t);
+  o.frequency.exponentialRampToValueAtTime(45,t+0.11);
+  ga.gain.setValueAtTime(vol,t);
+  ga.gain.exponentialRampToValueAtTime(0.0001,t+0.16);
+  o.connect(ga); ga.connect(musBus());
+  o.start(t); o.stop(t+0.18);
+}
+// Level 2 is the monster: it plays when the yeti is hunting you, and - when you are the yeti
+// yourself - over the last ten seconds, which is the only stretch of a hunt that can still go
+// badly. Menus and pauses fall back to the calm bed.
+function wantedLevel(){
+  if(gamestate!=='play') return 0;
+  if(hunting()) return timeLeft<10?2:1;
+  return yeti.active?2:0;
+}
+function scheduleStep(step,t){
+  const L=LEVELS[MUS.level];
+  const bar=(step>>3)&3, inBar=step&7;
+  const ch=PROG[L.prog][bar];
+  // bass: root on beats one and three, answered on the fifth. Danger drives straight eighths.
+  if(inBar===0||inBar===4)                    tone(hz(ch.r),t,0.26,'triangle',L.bvol);
+  else if(L.drums===2 && (inBar&1)===0)       tone(hz(ch.r+12),t,0.13,'triangle',L.bvol*0.6);
+  else if(inBar===6)                          tone(hz(ch.r+7),t,0.20,'triangle',L.bvol*0.7);
+  if(step%L.arp===0) tone(hz(ch.n[((step/L.arp)|0)%3]),t,0.10,'square',0.033);
+  const m=L.lead[step&31];
+  if(m!=null) tone(hz(m),t,0.15,'square',L.lvol);
+  if(L.drums>0){
+    if(inBar===0||inBar===4) kick(t,0.20);
+    if(L.drums===2){
+      if(inBar===2||inBar===6) drumNoise(t,0.13,1600,0.8,0.10);
+      drumNoise(t,0.03,7000,1.2,0.030);
+    }
+  }
+}
+function musicTick(){
+  if(!AC||AC.state!=='running'||MUS.muted){ MUS.next=0; return; }
+  const now=AC.currentTime;
+  // a backgrounded tab stops the animation frame while the audio clock runs on, so resync
+  // rather than scheduling the whole silent stretch in one burst on the way back
+  if(MUS.next<now) MUS.next=now+0.06;
+  while(MUS.next<now+0.25){
+    // level changes land on a half-bar, so a switch reads as a gear change rather than a glitch
+    if((MUS.step&3)===0) MUS.level=wantedLevel();
+    scheduleStep(MUS.step,MUS.next);
+    MUS.next+=30/LEVELS[MUS.level].bpm;      // one eighth note
+    MUS.step=(MUS.step+1)&31;
+  }
+}
+
 // ---------- input ----------
 addEventListener('keydown',e=>{
   if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' ','Escape'].includes(e.key)) e.preventDefault();
@@ -196,7 +320,9 @@ addEventListener('keydown',e=>{
     else if(gamestate==='paused') gamestate='play';
     return;
   }
-  if(gamestate==='paused'){ if(k==='m'){ reset(); gamestate='title'; } return; }
+  // M toggles music from anywhere, so quitting to the menu moved off it onto Q
+  if(k==='m'){ toggleMute(); return; }
+  if(gamestate==='paused'){ if(k==='q'){ reset(); gamestate='title'; } return; }
   if(gamestate==='title'){
     if(e.key==='ArrowLeft'){  cycleChar(-1); return; }
     if(e.key==='ArrowRight'){ cycleChar(1);  return; }
@@ -1106,7 +1232,7 @@ function draw(){
   let titleY=0, overY=0, pauseY=0;
   if(gamestate==='title'){       titleY=panel(240,178); drawCharIcons(titleY); }
   else if(gamestate==='over')   overY=panel(220,100);
-  else if(gamestate==='paused') pauseY=panel(190,80);
+  else if(gamestate==='paused') pauseY=panel(196,94);
 
   ctx.drawImage(buf,0,0,cv.width,cv.height);
 
@@ -1149,7 +1275,7 @@ function draw(){
       ctext('hold F for turbo',6,BH-30,7);
       ctext('in air: ← → spin  ↑ ↓ flip',6,BH-21,7);
     }
-    ctext('Esc: pause',6,BH-12,7);
+    ctext('Esc: pause    M: music '+(MUS.muted?'off':'on'),6,BH-12,7);
   }
   if(gamestate==='title')       drawTitleText(titleY);
   else if(gamestate==='over')   drawOverText(overY,meters);
@@ -1254,16 +1380,17 @@ function drawOverText(y,meters){
   if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+82, 8, {align:'center'});
 }
 function drawPausedText(y){
-  ctext('PAUSED', BW/2, y+16, 14, {align:'center',bold:true});
-  ctext('Esc — Resume', BW/2, y+46, 8, {align:'center'});
-  ctext('M — Main Menu', BW/2, y+60, 8, {align:'center'});
+  ctext('PAUSED', BW/2, y+14, 14, {align:'center',bold:true});
+  ctext('Esc — Resume', BW/2, y+42, 8, {align:'center'});
+  ctext('M — Music '+(MUS.muted?'off':'on'), BW/2, y+56, 8, {align:'center'});
+  ctext('Q — Main Menu', BW/2, y+70, 8, {align:'center'});
 }
 
 // ---------- main loop ----------
 let last=performance.now();
 function frame(now){
   const dt=Math.min((now-last)/1000,0.05); last=now;
-  update(dt); draw();
+  update(dt); draw(); musicTick();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
