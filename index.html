@@ -71,7 +71,7 @@ function fitScreen(){
   // (e.g. an ideal scale of 3.97 floors to 3, discarding ~25% of the window) - that's the big
   // blue margin. Rounding both dimensions against one fixed s bounds the leftover gap to at
   // most half a scale-step per axis: a couple of pixels, not a quarter of the screen.
-  const s=Math.max(1,Math.round(viewH*dpr/240));
+  const s=Math.max(1,Math.round(viewH*dpr/300));
   PXS=s;
   BW=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewW*dpr/s)));
   BH=Math.max(MIN_WORLD,Math.min(MAX_WORLD,Math.round(viewH*dpr/s)));
