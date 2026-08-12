@@ -116,6 +116,17 @@ function checkBest(meters,finalStyle){
   }
 }
 
+// ---------- character choice (cosmetic only — same physics either way) ----------
+let equip='ski';   // 'ski' | 'board', picked on the title screen with ← →
+try{
+  const savedEquip=localStorage.getItem('skifree_equip');
+  if(savedEquip==='ski'||savedEquip==='board') equip=savedEquip;
+}catch(e){}
+function toggleChar(){
+  equip=equip==='ski'?'board':'ski';
+  try{ localStorage.setItem('skifree_equip',equip); }catch(e){}
+}
+
 function reset(){
   P={x:0,y:0,dir:0,speed:0,z:0,vz:0,state:'ski',crashT:0,invT:0,airT:0,spin:0,flip:0,
      spinsPaid:0,flipsPaid:0};
@@ -158,7 +169,10 @@ addEventListener('keydown',e=>{
     return;
   }
   if(gamestate==='paused'){ if(k==='m'){ reset(); gamestate='title'; } return; }
-  if(gamestate==='title'){ gamestate='play'; return; }
+  if(gamestate==='title'){
+    if(e.key==='ArrowLeft'||e.key==='ArrowRight'){ toggleChar(); return; }
+    gamestate='play'; return;
+  }
   if(gamestate==='over'){ if(k===' '||k==='r'){ reset(); gamestate='play'; } return; }
   if(P.state==='eaten') return;
   if(P.z>0) return;   // airborne: arrows drive spin/flip tricks instead (handled continuously in update())
@@ -196,9 +210,11 @@ function bindHeld(el,keyname){        // mirrors a button into keys{} so air tri
   el.addEventListener('pointerleave',set(false));
   el.addEventListener('pointercancel',set(false));
 }
-function holdButton(el,fn){
+function holdButton(el,fn,titleFn){    // titleFn: alternate tap behavior while gamestate is 'title'
   let iv=null,to=null;
-  const start=e=>{ e.preventDefault(); if(gateTap())return; fn();
+  const start=e=>{ e.preventDefault();
+    if(gamestate==='title'&&titleFn){ initAudio(); titleFn(); return; }
+    if(gateTap())return; fn();
     to=setTimeout(()=>{ iv=setInterval(fn,90); },350); };
   const stop=e=>{ if(e)e.preventDefault(); clearTimeout(to); clearInterval(iv); to=iv=null; };
   el.addEventListener('pointerdown',start);
@@ -206,8 +222,8 @@ function holdButton(el,fn){
   el.addEventListener('pointerleave',stop);
   el.addEventListener('pointercancel',stop);
 }
-holdButton(document.getElementById('leftbtn'),stepLeft);
-holdButton(document.getElementById('rightbtn'),stepRight);
+holdButton(document.getElementById('leftbtn'),stepLeft,toggleChar);
+holdButton(document.getElementById('rightbtn'),stepRight,toggleChar);
 document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; stepDown(); });
 bindHeld(document.getElementById('leftbtn'),'arrowleft');
 bindHeld(document.getElementById('rightbtn'),'arrowright');
@@ -470,18 +486,24 @@ function drawRamp(x,y){
   g.fillStyle='#90b0d0'; g.fillRect(x-8,y,16,1); g.fillRect(x-8,y-3,1,3); g.fillRect(x+7,y-3,1,3);
 }
 function drawSkier(x,y){
+  const board=equip==='board';
+  const jacket=board?'#20a060':'#3050cc', hat=board?'#f0c020':'#cc3030';
   const yd=y-P.z;
   if(P.z>0){ g.fillStyle='rgba(120,140,160,.45)'; g.fillRect(x-4,y-1,8,2); }
   if(P.state==='eaten') return;
   if(P.state==='crash'){
-    g.fillStyle='#e0b000';                       // crossed skis
-    g.save(); g.translate(x,yd-2);
-    g.rotate(0.5);  g.fillRect(-7,-1,14,2);
-    g.rotate(-1.0); g.fillRect(-7,-1,14,2);
-    g.restore();
-    g.fillStyle='#3050cc'; g.fillRect(x-3,yd-7,6,5);
+    g.fillStyle='#e0b000';
+    if(board){                                  // single kicked-up board
+      g.save(); g.translate(x,yd-2); g.rotate(0.6); g.fillRect(-8,-1,16,3); g.restore();
+    }else{                                       // crossed skis
+      g.save(); g.translate(x,yd-2);
+      g.rotate(0.5);  g.fillRect(-7,-1,14,2);
+      g.rotate(-1.0); g.fillRect(-7,-1,14,2);
+      g.restore();
+    }
+    g.fillStyle=jacket; g.fillRect(x-3,yd-7,6,5);
     g.fillStyle='#eab088'; g.fillRect(x-2,yd-10,4,3);
-    g.fillStyle='#cc3030'; g.fillRect(x-2,yd-12,4,2);
+    g.fillStyle=hat; g.fillRect(x-2,yd-12,4,2);
     return;
   }
   const a=ANGLES[P.dir+2];
@@ -491,20 +513,23 @@ function drawSkier(x,y){
   // would read as a sideways cartwheel. flip (↑ ↓) is a real front/back somersault, so a
   // height squash is correct there.
   if(P.z>0){ g.scale(Math.cos(P.spin),Math.cos(P.flip)); }
-  const splay=P.z>0?0.45:0;
-  // skis
-  g.fillStyle='#e0b000';
-  g.save(); g.rotate(-splay); g.fillRect(-4,-1,2,9); g.restore();
-  g.save(); g.rotate( splay); g.fillRect( 2,-1,2,9); g.restore();
-  // poles
-  g.fillStyle='#707070'; g.fillRect(-6,-5,1,8); g.fillRect(5,-5,1,8);
+  if(board){
+    // snowboard: one board fixed sideways under both feet, no poles
+    g.fillStyle='#e0b000'; g.fillRect(-7,-1,14,3);
+  }else{
+    const splay=P.z>0?0.45:0;
+    g.fillStyle='#e0b000';
+    g.save(); g.rotate(-splay); g.fillRect(-4,-1,2,9); g.restore();
+    g.save(); g.rotate( splay); g.fillRect( 2,-1,2,9); g.restore();
+    g.fillStyle='#707070'; g.fillRect(-6,-5,1,8); g.fillRect(5,-5,1,8);   // poles
+  }
   // body
-  g.fillStyle='#3050cc'; g.fillRect(-3,-8,6,6);
+  g.fillStyle=jacket; g.fillRect(-3,-8,6,6);
   if(P.z>0){ g.fillRect(-5,-11,2,4); g.fillRect(3,-11,2,4); }       // arms up
   else     { g.fillRect(-5,-7,2,3);  g.fillRect(3,-7,2,3);  }
   // head + hat
   g.fillStyle='#eab088'; g.fillRect(-2,-12,4,4);
-  g.fillStyle='#cc3030'; g.fillRect(-2,-14,4,2);
+  g.fillStyle=hat; g.fillRect(-2,-14,4,2);
   g.restore();
 }
 function drawYeti(x,y){
@@ -601,7 +626,7 @@ function draw(){
   }
 
   let titleY=0, overY=0, pauseY=0;
-  if(gamestate==='title')       titleY=panel(230,134);
+  if(gamestate==='title')       titleY=panel(230,147);
   else if(gamestate==='over')   overY=panel(220,100);
   else if(gamestate==='paused') pauseY=panel(190,80);
 
@@ -667,12 +692,13 @@ function drawTitleText(y){
   ctext('S K I B I D I F R E E', BW/2, y+12, 16, {align:'center',bold:true});
   ctext(best.dist>0 ? ('your best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style)) : 'no runs yet - this is your first!',
     BW/2, y+27, 8, {align:'center',color:'#458'});
-  ctext('← →  steer      ↓  straight down', BW/2, y+40, 8, {align:'center'});
-  ctext('hold F for turbo', BW/2, y+53, 8, {align:'center'});
-  ctext('hit ramps for style points', BW/2, y+66, 8, {align:'center'});
-  ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+79, 8, {align:'center'});
-  ctext('Esc to pause anytime', BW/2, y+95, 8, {align:'center'});
-  if(Math.floor(timeNow*2)%2) ctext('- press any key to ski -', BW/2, y+113, 8, {align:'center'});
+  ctext('◄  '+(equip==='board'?'SNOWBOARD':'SKIS')+'  ►    (← → to change)', BW/2, y+40, 8, {align:'center',bold:true});
+  ctext('← →  steer      ↓  straight down', BW/2, y+53, 8, {align:'center'});
+  ctext('hold F for turbo', BW/2, y+66, 8, {align:'center'});
+  ctext('hit ramps for style points', BW/2, y+79, 8, {align:'center'});
+  ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+92, 8, {align:'center'});
+  ctext('Esc to pause anytime', BW/2, y+108, 8, {align:'center'});
+  if(Math.floor(timeNow*2)%2) ctext('- press ↓ or SPACE to ski -', BW/2, y+126, 8, {align:'center'});
 }
 function drawOverText(y,meters){
   ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
