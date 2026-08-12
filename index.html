@@ -514,8 +514,9 @@ function drawSkier(x,y){
   // height squash is correct there.
   if(P.z>0){ g.scale(Math.cos(P.spin),Math.cos(P.flip)); }
   if(board){
-    // snowboard: one board fixed sideways under both feet, no poles
-    g.fillStyle='#e0b000'; g.fillRect(-7,-1,14,3);
+    // snowboard: one wide board under both feet, pointed downhill like skis (the rider's
+    // stance is sideways-on, but the board itself tracks the direction of travel), no poles
+    g.fillStyle='#e0b000'; g.fillRect(-3,-1,6,11);
   }else{
     const splay=P.z>0?0.45:0;
     g.fillStyle='#e0b000';
