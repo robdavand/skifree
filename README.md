@@ -16,17 +16,37 @@ npx serve -l 4173 .
 
 Then visit `http://localhost:4173`.
 
+## Menu
+
+The title screen is a real menu: **Play**, **Character**, **Leaderboard**, **Controls** and a music
+toggle. Click the buttons, or move the highlight with `↑` `↓` and press `Enter`.
+
+- **Character** — skis, snowboard or yeti, shown as live portraits drawn by the game's own sprite
+  code. The one you're on is highlighted, and named on the main menu.
+- **Leaderboard** — the top five downhill runs and the top five hunts on this device, kept in
+  `localStorage`. The row a run just earned is picked out in green.
+- **Controls** — every key can be remapped: pick a row, press the key you want. `Arrow keys` and
+  `WASD` presets are one click away. Binding a key that's already taken swaps the two.
+
 ## Controls
 
 | Key | Action |
 |---|---|
 | `←` / `→` | Steer left / right |
 | `↓` | Point straight downhill |
+| `↑` / `↓` | Flip, while airborne |
 | `F` (hold) | Turbo speed boost |
-| Any key | Start from the title screen |
+| `Esc` | Pause / resume |
+| `M` | Music on / off |
+| `Q` | Quit to the menu (while paused) |
 | `Space` / `R` | Restart after a crash |
 
-On touch devices, on-screen buttons appear automatically: left/down/right to steer, and a red **F** button to hold for turbo. Tap anywhere on the slope to start or restart.
+The first five are defaults — remap them from **Controls** on the main menu. `Esc`, `M` and `Q`
+are fixed.
+
+On touch devices, on-screen buttons appear automatically while you're skiing: left/down/right to
+steer, and a red **F** button to hold for turbo. The menus are tapped directly, so the pad stays
+out of the way until a run starts.
 
 ## Gameplay
 
@@ -40,4 +60,10 @@ On touch devices, on-screen buttons appear automatically: left/down/right to ste
 
 - Renders to an off-screen low-res buffer (320×240) that's scaled onto the visible canvas for a crisp pixel-art look (`image-rendering: pixelated`). The canvas resizes to fit the viewport (capped at 2x device pixel ratio), so it fills the screen on both desktop and mobile.
 - World generation uses a deterministic hash over a grid of cells so terrain around the player is spawned/culled on the fly as the camera moves.
-- `window.GAME` exposes the player, yeti, obstacles, game state, and style score for debugging in the browser console.
+- Menus are drawn in the same two passes as the HUD: boxes and sprites onto the low-res buffer,
+  text straight onto the full-resolution canvas. Every widget is pushed onto one hit list in
+  focus order, so clicking, hovering and arrow-key navigation all read the same layout.
+- Input is action-based (`left`, `right`, `down`, `up`, `turbo`) rather than key-based, which is
+  what lets the controls screen rebind keys and the touch buttons feed the same code path.
+- `window.GAME` exposes the player, yeti, obstacles, game state, style score, key bindings,
+  leaderboard and the current menu hit list for debugging in the browser console.
