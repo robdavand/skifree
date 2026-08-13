@@ -1,6 +1,6 @@
 # SkiFree.js
 
-A single-file HTML5 canvas clone of the classic 1991 Windows game *SkiFree*. Ski down an endless mountain, dodge obstacles, catch air off ramps for style points — and watch out for the yeti.
+What started as an attempt at a single-file HTML5 canvas clone of the classic 1991 Windows game *SkiFree* turned into a low effort knockoff. Ski down an endless mountain, dodge obstacles, catch air off ramps for style points. Watch out for the yeti or become it.
 
 The whole game lives in [index.html](index.html): no build step, no dependencies, just an inline `<script>` driving a `<canvas>`. The only other file is a test for the bits that persist ([see below](#tests)).
 
