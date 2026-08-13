@@ -507,24 +507,59 @@ cv.addEventListener('pointermove',e=>{
 
 // ---------- world spawning ----------
 function hash2(x,y){ let h=(x*73856093)^(y*19349663); h=(h^(h>>>13))>>>0; return h; }
+// A cell's contents come from a hash of its coordinates rather than from Math.random(), so every
+// player skis the SAME mountain. Two leaderboard rows are then a comparison of two runs down
+// identical terrain instead of of who got the kinder scatter, and a hill you have skied before is
+// one you can learn. Successive values come from stepping an LCG off that hash, the way the snow
+// speckle in draw() already does.
+function cellRand(seed){
+  let h=(seed^0x9e3779b9)>>>0;
+  return function(){ h=(h*1103515245+12345)>>>0; return h/4294967296; };
+}
+// The descent has a shape. Up top the hill is open and generous with ramps; a couple of kilometres
+// down it is a forest with the occasional jump in it. Everything between interpolates by depth.
+// The curve deliberately tops out: past the ceiling it is the yeti that goes on raising the
+// stakes, and terrain that kept thickening forever would just become a wall.
+const T_TOP   ={dens:0.30, tree:0.30, deadtree:0.05, rock:0.10, stump:0.15, ramp:0.40};
+const T_DEEP  ={dens:0.60, tree:0.50, deadtree:0.16, rock:0.18, stump:0.08, ramp:0.08};
+const T_FULL_AT=2500;                 // metres at which the hill is as mean as it gets
+const T_MAX_DENS=0.78;                // and the hardest any one cell may ever be
+const T_KINDS=['tree','deadtree','rock','stump','ramp'];
+// Regions give the descent local texture rather than an even sprinkle of noise: a glade you can
+// open up and take jumps in, a thicket you have to pick your way through. One coarse hash over
+// blocks of cells, sized so a region lasts a couple of seconds of skiing rather than a frame.
+const T_REGION=8;
+function regionAt(cx,cy){
+  const r=hash2(Math.floor(cx/T_REGION),Math.floor(cy/T_REGION))%100;
+  return r<22?'glade':r<44?'thicket':'open';
+}
 function spawnCell(cx,cy){
   const key=cx+','+cy;
   if(cells.has(key)) return;
   cells.add(key);
-  const r=Math.random();
-  if(r>0.52) return;
-  const ox=cx*CELL+Math.random()*CELL, oy=cy*CELL+Math.random()*CELL;
-  // keep a clear zone around the skier's current spot (matters at start)
-  if(Math.hypot(ox-P.x,oy-P.y)<70) return;
-  let type;
-  const t=Math.random();
-  if(t<0.42) type='tree';
-  else if(t<0.52) type='deadtree';
-  else if(t<0.68) type='rock';
-  else if(t<0.80) type='stump';
-  else type='ramp';
+  const rnd=cellRand(hash2(cx,cy));
+  const k=Math.max(0,Math.min(1,(cy*CELL/PX_PER_M)/T_FULL_AT));   // 0 at the start, 1 once deep
+  const reg=regionAt(cx,cy);
+  let dens=T_TOP.dens+(T_DEEP.dens-T_TOP.dens)*k;
+  if(reg==='glade')        dens*=0.35;
+  else if(reg==='thicket') dens*=1.35;
+  if(rnd()>Math.min(T_MAX_DENS,dens)) return;
+  const ox=cx*CELL+rnd()*CELL, oy=cy*CELL+rnd()*CELL;
+  // Keep the first few strides clear. Measured from the start line rather than from wherever the
+  // skier currently is: terrain that depended on how you skied to it would stop being the same
+  // mountain for everyone, which is the whole point of hashing it.
+  if(Math.hypot(ox,oy)<70) return;
+  // the same weights, tilted by region: a glade is where the ramps are, a thicket is mostly trunks
+  const w=T_KINDS.map(t=>{
+    let v=T_TOP[t]+(T_DEEP[t]-T_TOP[t])*k;
+    if(reg==='glade'  && t==='ramp') v*=2.5;
+    if(reg==='thicket') v*= t==='tree'?1.6 : t==='ramp'?0.3 : 1;
+    return v;
+  });
+  let roll=rnd()*w.reduce((a,b)=>a+b,0), type=T_KINDS[0];
+  for(let i=0;i<w.length;i++){ roll-=w[i]; if(roll<=0){ type=T_KINDS[i]; break; } }
   // v picks between the art variants for that type, so a hillside of trees stops looking stamped
-  obstacles.push({x:ox,y:oy,type,v:(Math.random()*4)|0});
+  obstacles.push({x:ox,y:oy,type,v:(rnd()*4)|0});
 }
 function spawnAround(camX,camY){
   const x0=Math.floor((camX-120)/CELL), x1=Math.floor((camX+BW+120)/CELL);
