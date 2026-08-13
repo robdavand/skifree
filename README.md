@@ -2,7 +2,7 @@
 
 A single-file HTML5 canvas clone of the classic 1991 Windows game *SkiFree*. Ski down an endless mountain, dodge obstacles, catch air off ramps for style points — and watch out for the yeti.
 
-Everything lives in [index.html](index.html): no build step, no dependencies, just an inline `<script>` driving a `<canvas>`.
+The whole game lives in [index.html](index.html): no build step, no dependencies, just an inline `<script>` driving a `<canvas>`. The only other file is a test for the bits that persist ([see below](#tests)).
 
 **Play it here: https://robdavand.github.io/skifree/**
 
@@ -67,3 +67,21 @@ out of the way until a run starts.
   what lets the controls screen rebind keys and the touch buttons feed the same code path.
 - `window.GAME` exposes the player, yeti, obstacles, game state, style score, key bindings,
   leaderboard and the current menu hit list for debugging in the browser console.
+
+## Tests
+
+Your leaderboard, key bindings and character live in `localStorage`, where a typo in a key name or
+a shape that doesn't survive `JSON.parse` would quietly lose someone's scores. One script covers
+that round trip:
+
+```bash
+node storage-test.js
+```
+
+It reads the real `<script>` out of `index.html` and boots it against a mock `localStorage`,
+stubbing only the DOM around the game and never the game itself — so it goes stale the moment
+`index.html` does, which is the point of reading it rather than a fixture. It covers a cold start,
+the migration from the old single-best values, the write/reload round trip, the five-row cap and
+sort order, rebinding (including a clash swapping two keys), junk in every stored key, and storage
+that throws on every call — Safari's private mode, and any page opened from a `data:` URL, where
+the game has to keep running with nothing saved.
