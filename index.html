@@ -110,8 +110,11 @@ const HUNT_SECS=60, HUNTV=180, HUNTSPRINT=252;
 const PREYV=132, PREYPANIC=206, PREY_SEE=95, PREY_MAX=5;
 
 // ---------- state ----------
-let gamestate='title';           // title | play | over
-let P, yeti, obstacles, cells, tracks, prints, particles, popups, live, style, nextYetiAt, keys={};
+let gamestate='title';           // title | play | over | paused
+// held is keyed by ACTION, not by key name: everything downstream of the input layer asks "is the
+// player steering left", never "is ArrowLeft down", which is what lets the controls screen rebind
+// a key (or a touch button push the same action) without a single line of physics knowing.
+let P, yeti, obstacles, cells, tracks, prints, particles, popups, live, style, nextYetiAt, held={};
 let preys, eaten, timeLeft, nextPreyAt;
 let timeNow=0;
 
@@ -128,27 +131,102 @@ function checkBest(meters,finalStyle){
   if(newBestDist) best.dist=meters;
   if(newBestStyle) best.style=finalStyle;
   if(newBestDist||newBestStyle) saveBest();
+  record(board.run,{d:meters,s:finalStyle,e:equip,t:Date.now()},'d');
 }
 function checkBestHunt(n){
   newBestEaten=n>best.eaten;
   if(newBestEaten){ best.eaten=n; saveBest(); }
+  record(board.hunt,{n:n,t:Date.now()},'n');
 }
+
+// ---------- leaderboard ----------
+// A table of runs rather than the single best of each stat above: the same device, the same
+// browser, no server. best{} still drives the NEW BEST! flashes, so the two live side by side
+// instead of one being rewritten in terms of the other.
+const LB_MAX=5;
+let board={run:[],hunt:[]};
+let lbNew=null;                   // the row the last run earned, so the board can point it out
+try{
+  const saved=JSON.parse(localStorage.getItem('skifree_board'));
+  if(saved){
+    if(Array.isArray(saved.run))  board.run =saved.run.slice(0,LB_MAX);
+    if(Array.isArray(saved.hunt)) board.hunt=saved.hunt.slice(0,LB_MAX);
+  }
+}catch(e){}
+// Someone who set a best before this board existed still deserves their row: seed it from best{}
+// once, dateless (t:0) because that run's date was never recorded.
+if(!board.run.length && best.dist>0)   board.run.push({d:Math.floor(best.dist),s:Math.floor(best.style),e:'ski',t:0});
+if(!board.hunt.length && best.eaten>0) board.hunt.push({n:best.eaten,t:0});
+function saveBoard(){ try{ localStorage.setItem('skifree_board',JSON.stringify(board)); }catch(e){} }
+function record(list,entry,key){
+  list.push(entry);
+  list.sort((a,b)=>b[key]-a[key]);
+  if(list.length>LB_MAX) list.length=LB_MAX;
+  // null if the run did not make the cut — and a blank run that only placed because the board is
+  // still half empty is not worth congratulating either
+  lbNew=(entry[key]>0&&list.indexOf(entry)>=0)?entry:null;
+  saveBoard();
+}
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function stamp(t){ if(!t) return ''; const d=new Date(t); return d.getDate()+' '+MONTHS[d.getMonth()]; }
 
 // ---------- character choice ----------
 // The first two are skins over one set of physics. The third swaps the game round: picking the
 // yeti makes you the hunter, and the run becomes a timed count of how many skiers you can catch.
 const CHARS=['ski','board','yeti'];
-const CHAR_NAMES={ski:'SKIS',board:'SNOWBOARD',yeti:'YETI  (hunt mode)'};
+const CHAR_NAMES={ski:'SKIS',board:'SNOWBOARD',yeti:'YETI'};
+const CHAR_BLURB={
+  ski:  ['the classic rig: quick edges,','poles to plant, air off the ramps.'],
+  board:['looser turns and floatier air,','with the same yeti on your tail.'],
+  yeti: ['hunt mode - you are the monster.','eat every skier you can catch.'],
+};
 let equip='ski';
 try{
   const savedEquip=localStorage.getItem('skifree_equip');
   if(CHARS.indexOf(savedEquip)>=0) equip=savedEquip;
 }catch(e){}
-function cycleChar(step){
-  equip=CHARS[(CHARS.indexOf(equip)+step+CHARS.length)%CHARS.length];
+function setChar(c){
+  if(CHARS.indexOf(c)<0) return;
+  equip=c;
   try{ localStorage.setItem('skifree_equip',equip); }catch(e){}
 }
+function cycleChar(step){ setChar(CHARS[(CHARS.indexOf(equip)+step+CHARS.length)%CHARS.length]); }
 function hunting(){ return equip==='yeti'; }
+
+// ---------- key bindings ----------
+// The five things a player can actually do, and whichever key each is currently on. Remapped from
+// the controls screen and persisted, so a WASD player never has to think about it again.
+const ACTIONS=['left','right','down','up','turbo'];
+const ACTION_NAMES={left:'Steer left',right:'Steer right',down:'Straight down',
+                    up:'Flip back (air)',turbo:'Turbo / sprint'};
+const PRESETS={
+  arrows:{left:'arrowleft',right:'arrowright',down:'arrowdown',up:'arrowup',turbo:'f'},
+  wasd:  {left:'a',right:'d',down:'s',up:'w',turbo:'shift'},
+};
+let binds=Object.assign({},PRESETS.arrows);
+try{
+  const saved=JSON.parse(localStorage.getItem('skifree_keys'));
+  if(saved) for(const a of ACTIONS) if(typeof saved[a]==='string') binds[a]=saved[a];
+}catch(e){}
+function saveBinds(){ try{ localStorage.setItem('skifree_keys',JSON.stringify(binds)); }catch(e){} }
+// Two actions sharing a key would leave one of them unreachable, so a clash swaps rather than
+// duplicates: the key the rebound action is giving up goes to whoever owned the key it is taking.
+function bindKey(action,k){
+  const old=binds[action];
+  for(const a of ACTIONS) if(a!==action && binds[a]===k) binds[a]=old;
+  binds[action]=k;
+  for(const a of ACTIONS) held[a]=false;   // a key rebound mid-press would otherwise never lift
+  saveBinds();
+}
+function setPreset(name){
+  for(const a of ACTIONS) binds[a]=PRESETS[name][a];
+  for(const a of ACTIONS) held[a]=false;
+  saveBinds();
+}
+function actionFor(k){ for(const a of ACTIONS) if(binds[a]===k) return a; return null; }
+const KEY_LABELS={arrowleft:'←',arrowright:'→',arrowup:'↑',arrowdown:'↓',
+                  ' ':'SPACE',shift:'SHIFT',control:'CTRL',alt:'ALT',tab:'TAB',enter:'ENTER'};
+function keyLabel(k){ return KEY_LABELS[k]||(k.length===1?k.toUpperCase():k); }
 
 function reset(){
   // t/eatT/step drive the yeti animation while hunting; the ski fields sit unused in that mode
@@ -184,6 +262,9 @@ const sndLand  =()=>{ beep(150,0.07,'square',0.08); };
 const sndMunch =()=>{ for(let i=0;i<4;i++) beep(70+i*8,0.12,'sawtooth',0.16,i*0.28); };
 const sndRoar  =()=>{ beep(55,0.6,'sawtooth',0.18); beep(48,0.6,'sawtooth',0.14,0.1); };
 const sndTrick =()=>{ beep(500,0.08,'square',0.12); beep(700,0.09,'square',0.12,0.07); beep(950,0.11,'square',0.12,0.14); };
+// menu feedback: a dry tick as the highlight moves, a two-note lift when something is chosen
+const sndBlip  =()=>{ beep(620,0.03,'square',0.05); };
+const sndPick  =()=>{ beep(720,0.05,'square',0.09); beep(980,0.07,'square',0.09,0.05); };
 
 // ---------- music ----------
 // A chiptune bed built from the same oscillators as the effects above, so the page stays one
@@ -311,67 +392,70 @@ function musicTick(){
 
 // ---------- input ----------
 addEventListener('keydown',e=>{
-  if(['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' ','Escape'].includes(e.key)) e.preventDefault();
-  initAudio();
   const k=e.key.toLowerCase();
-  keys[k]=true;
-  if(e.key==='Escape'){
-    if(gamestate==='play')   gamestate='paused';
-    else if(gamestate==='paused') gamestate='play';
+  const a=actionFor(k);
+  // while a row is waiting for its new key, nothing gets its default: Tab would move focus out of
+  // the page and Space would scroll it, and either would happen instead of the bind
+  if(a||rebindAction||['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' ','Escape'].includes(e.key)) e.preventDefault();
+  initAudio();
+  if(a) held[a]=true;
+  // The controls screen swallows the whole next keystroke, so any key at all can be bound —
+  // including the ones that mean something everywhere else.
+  if(rebindAction){
+    if(k!=='escape'&&k!=='enter') bindKey(rebindAction,k);
+    rebindAction=null;
     return;
   }
-  // M toggles music from anywhere, so quitting to the menu moved off it onto Q
-  if(k==='m'){ toggleMute(); return; }
-  if(gamestate==='paused'){ if(k==='q'){ reset(); gamestate='title'; } return; }
-  if(gamestate==='title'){
-    if(e.key==='ArrowLeft'){  cycleChar(-1); return; }
-    if(e.key==='ArrowRight'){ cycleChar(1);  return; }
-    startRun(); return;
+  if(k==='escape'){
+    if(gamestate==='play')        gamestate='paused';
+    else if(gamestate==='paused') gamestate='play';
+    else if(gamestate==='over')   toMenu();
+    else if(menu!=='main')        menuActivate('back');
+    return;
   }
-  if(gamestate==='over'){ if(k===' '||k==='r') startRun(); return; }
+  // M toggles music from anywhere, so quitting to the menu moved off it onto Q. Both step aside
+  // if the player has bound that key to something of their own.
+  if(k==='m'&&!a){ toggleMute(); return; }
+  if(gamestate==='paused'){ if(k==='q'&&!a) toMenu(); return; }
+  if(gamestate==='title'||gamestate==='over'){ menuKey(k,a); return; }
   if(P.state==='eaten') return;
-  if(P.z>0) return;   // airborne: arrows drive spin/flip tricks instead (handled continuously in update())
-  if(e.key==='ArrowLeft')  P.dir=Math.max(P.dir-1,-2);
-  if(e.key==='ArrowRight') P.dir=Math.min(P.dir+1, 2);
-  if(e.key==='ArrowDown')  P.dir=0;
+  if(P.z>0) return;   // airborne: the steer keys drive spin/flip tricks instead (held, in update())
+  if(a==='left')  P.dir=Math.max(P.dir-1,-2);
+  if(a==='right') P.dir=Math.min(P.dir+1, 2);
+  if(a==='down')  P.dir=0;
 });
-addEventListener('keyup',e=>{ keys[e.key.toLowerCase()]=false; });
+addEventListener('keyup',e=>{ const a=actionFor(e.key.toLowerCase()); if(a) held[a]=false; });
 
 // ---------- touch controls ----------
 const touchui=document.getElementById('touchui');
 let touchMode=false;
+// Only decides WHETHER this is a touch device; whether the pad is on screen is decided every
+// frame in draw(), because the menus are tapped directly and the pad would only sit on top of them.
 function checkTouch(){
-  if(matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints>0){
-    touchui.classList.add('show');
+  if(matchMedia('(pointer:coarse)').matches || 'ontouchstart' in window || navigator.maxTouchPoints>0)
     touchMode=true;
-  }
 }
 checkTouch();
 addEventListener('resize',checkTouch);
 addEventListener('pointerdown',e=>{ if(e.pointerType==='touch') checkTouch(); });
 // Starting from the menu re-runs reset() so the run picks up whichever character is selected now
-// (P caches equip, and hunt mode needs its clock back at the full minute).
-function startRun(){ reset(); gamestate='play'; }
-function gateTap(){                  // returns true if the tap only advanced title/gameover state
-  initAudio();
-  if(gamestate==='title'||gamestate==='over'){ startRun(); return true; }
-  return false;
-}
+// (P caches equip, and hunt mode needs its clock back at the full minute). The cursor is handed
+// back because the pointer is sitting on a button the instant the run starts.
+function startRun(){ reset(); lbNew=null; cv.style.cursor='default'; gamestate='play'; }
+function toMenu(){ reset(); gamestate='title'; menu='main'; menuSel=0; }
 function stepLeft(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=Math.max(P.dir-1,-2); }
 function stepRight(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=Math.min(P.dir+1,2); }
 function stepDown(){ if(gamestate==='play' && P.state!=='eaten' && P.z<=0) P.dir=0; }
-function bindHeld(el,keyname){        // mirrors a button into keys{} so air tricks can read it like a keyboard hold
-  const set=v=>e=>{ e.preventDefault(); keys[keyname]=v; };
+function bindHeld(el,action){         // mirrors a button into held{} so air tricks can read it like a keyboard hold
+  const set=v=>e=>{ e.preventDefault(); held[action]=v; };
   el.addEventListener('pointerdown',set(true));
   el.addEventListener('pointerup',set(false));
   el.addEventListener('pointerleave',set(false));
   el.addEventListener('pointercancel',set(false));
 }
-function holdButton(el,fn,titleFn){    // titleFn: alternate tap behavior while gamestate is 'title'
+function holdButton(el,fn){
   let iv=null,to=null;
-  const start=e=>{ e.preventDefault();
-    if(gamestate==='title'&&titleFn){ initAudio(); titleFn(); return; }
-    if(gateTap())return; fn();
+  const start=e=>{ e.preventDefault(); initAudio(); fn();
     to=setTimeout(()=>{ iv=setInterval(fn,90); },350); };
   const stop=e=>{ if(e)e.preventDefault(); clearTimeout(to); clearInterval(iv); to=iv=null; };
   el.addEventListener('pointerdown',start);
@@ -379,17 +463,47 @@ function holdButton(el,fn,titleFn){    // titleFn: alternate tap behavior while 
   el.addEventListener('pointerleave',stop);
   el.addEventListener('pointercancel',stop);
 }
-holdButton(document.getElementById('leftbtn'),stepLeft,()=>cycleChar(-1));
-holdButton(document.getElementById('rightbtn'),stepRight,()=>cycleChar(1));
-document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; stepDown(); });
-bindHeld(document.getElementById('leftbtn'),'arrowleft');
-bindHeld(document.getElementById('rightbtn'),'arrowright');
-bindHeld(document.getElementById('downbtn'),'arrowdown');
-document.getElementById('turbobtn').addEventListener('pointerdown',e=>{ e.preventDefault(); if(gateTap())return; keys['f']=true; });
-document.getElementById('turbobtn').addEventListener('pointerup',e=>{ e.preventDefault(); keys['f']=false; });
-document.getElementById('turbobtn').addEventListener('pointerleave',e=>{ e.preventDefault(); keys['f']=false; });
-document.getElementById('turbobtn').addEventListener('pointercancel',e=>{ e.preventDefault(); keys['f']=false; });
-cv.addEventListener('pointerdown',()=>{ gateTap(); });
+holdButton(document.getElementById('leftbtn'),stepLeft);
+holdButton(document.getElementById('rightbtn'),stepRight);
+document.getElementById('downbtn').addEventListener('pointerdown',e=>{ e.preventDefault(); initAudio(); stepDown(); });
+bindHeld(document.getElementById('leftbtn'),'left');
+bindHeld(document.getElementById('rightbtn'),'right');
+bindHeld(document.getElementById('downbtn'),'down');
+bindHeld(document.getElementById('turbobtn'),'turbo');
+document.getElementById('turbobtn').addEventListener('pointerdown',initAudio);
+
+// ---------- menu pointer ----------
+// The canvas is one scaled image of a world-unit layout, so a click only has to be divided back
+// down into world units to be tested against the same rects the menu drew itself with.
+function evWorld(e){
+  const r=cv.getBoundingClientRect();
+  return {x:(e.clientX-r.left)*BW/r.width, y:(e.clientY-r.top)*BH/r.height};
+}
+function hitAt(p){
+  for(let i=0;i<uiHits.length;i++){
+    const b=uiHits[i];
+    if(p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h) return i;
+  }
+  return -1;
+}
+function menuOpen(){ return gamestate==='title'||gamestate==='over'; }
+cv.addEventListener('pointerdown',e=>{
+  initAudio();
+  if(!menuOpen()) return;
+  const i=hitAt(evWorld(e));
+  if(i<0) return;
+  e.preventDefault();
+  menuSel=i;                       // a tap moves the keyboard focus too, so the two never disagree
+  menuActivate(uiHits[i].id);
+});
+// Hover is the mouse's version of the focus a keyboard moves with the arrow keys, so it drives the
+// same variable rather than a second highlight of its own. Touch has no hover: the finger is the click.
+cv.addEventListener('pointermove',e=>{
+  if(e.pointerType==='touch'||!menuOpen()) return;
+  const i=hitAt(evWorld(e));
+  cv.style.cursor=i>=0?'pointer':'default';
+  if(i>=0&&i!==menuSel){ menuSel=i; sndBlip(); }
+});
 
 // ---------- world spawning ----------
 function hash2(x,y){ let h=(x*73856093)^(y*19349663); h=(h^(h>>>13))>>>0; return h; }
@@ -502,7 +616,7 @@ function updateHunter(dt){
   P.invT=Math.max(0,P.invT-dt);
   P.stunT=Math.max(0,P.stunT-dt);
   if(P.eatT>0){ P.eatT-=dt; P.speed=0; return; }     // held still over the meal
-  const target=P.stunT>0?35:(keys['f']?HUNTSPRINT:HUNTV);
+  const target=P.stunT>0?35:(held.turbo?HUNTSPRINT:HUNTV);
   P.speed+=(target-P.speed)*Math.min(1,3.2*dt);
   const a=ANGLES[P.dir+2];
   P.x+=Math.sin(a)*P.speed*dt; P.y+=Math.cos(a)*P.speed*dt;
@@ -587,13 +701,13 @@ function update(dt){
   }else if(P.state==='ski'){
     P.invT=Math.max(0,P.invT-dt);
     P.landT=Math.max(0,P.landT-dt);
-    P.turbo=!!keys['f'];      // the tuck pose reads this off the state, like a prey skier's does
+    P.turbo=!!held.turbo;     // the tuck pose reads this off the state, like a prey skier's does
     const a=ANGLES[P.dir+2];
     if(P.z<=0){                        // steering/speed only change with your feet on the snow
       if(Math.abs(P.dir)===2){
         P.speed+=(0-P.speed)*Math.min(1,3.5*dt);          // skid to a stop
       }else{
-        const target=keys['f']?TURBOV:MAXV;
+        const target=held.turbo?TURBOV:MAXV;
         const rate=P.speed<target?0.55:2.5;
         P.speed+=(target-P.speed)*Math.min(1,rate*dt);
       }
@@ -605,10 +719,10 @@ function update(dt){
     if(P.z>0){
       const drip=25*dt;
       P.airT+=dt; style+=drip; liveScore(drip);
-      if(keys['arrowleft'])  P.spin-=SPIN_RATE*dt;
-      if(keys['arrowright']) P.spin+=SPIN_RATE*dt;
-      if(keys['arrowup'])    P.flip-=FLIP_RATE*dt;
-      if(keys['arrowdown'])  P.flip+=FLIP_RATE*dt;
+      if(held.left)  P.spin-=SPIN_RATE*dt;
+      if(held.right) P.spin+=SPIN_RATE*dt;
+      if(held.up)    P.flip-=FLIP_RATE*dt;
+      if(held.down)  P.flip+=FLIP_RATE*dt;
       // rotations pay out the moment they complete rather than all at once on landing, so the
       // popup (and the trick sound) react while you are still in the air and can see why
       const spins=Math.floor(Math.abs(P.spin)/(Math.PI*2));
@@ -666,7 +780,7 @@ function update(dt){
   if(hunting()){
     updatePrey(dt,camY);
     timeLeft-=dt;
-    if(timeLeft<=0){ timeLeft=0; gamestate='over'; checkBestHunt(eaten); }
+    if(timeLeft<=0){ timeLeft=0; gamestate='over'; menuSel=0; checkBestHunt(eaten); }
   }
 
   // --- yeti (the one chasing you — it has no part in a run where you are it) ---
@@ -699,7 +813,7 @@ function update(dt){
     }else if(yeti.state==='eat'){
       yeti.eatT+=dt;
       if(yeti.eatT>2.4 && gamestate!=='over'){
-        gamestate='over';
+        gamestate='over'; menuSel=0;
         checkBest(Math.floor(meters),Math.floor(style));
       }
     }
@@ -886,67 +1000,82 @@ const KIT={
   board:kitFor({o:'#0a3020',k:'#146840',j:'#20a060',J:'#40c880',z:'#d8ffe8'},
                {k:'#9a7000',h:'#f0c020',H:'#ffe070'}),
 };
-// -- yeti: outlined throughout, because white fur on white snow had no silhouette at all, and
-// tapered from shoulder to waist so the outline reads as a body rather than a box --
-const YETI_BODY=pal({o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',b:'#f2f7ff',C:'#3a4050'});
-// The silhouette steps in and out by a pixel every few rows: that ragged edge is what makes the
-// outline read as fur rather than as a fridge, which is exactly how the first pass looked.
-const Y_WIDE ='ooFFFFFFFFffffffffffssssssssoo';
+// -- yeti: outlined throughout, because white fur on white snow had no silhouette at all --
+const YETI_BODY=pal({o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',d:'#9fb0c4',
+                     C:'#3a4050',N:'#f6f2e4',n:'#cfc7ae'});
+// Heaviest across the shoulders and chest and narrowing into the waist. The first pass tapered the
+// other way — narrow shoulders over a wide belly — and a pear shape reads as soft no matter what
+// is drawn on it, which is most of why the thing looked like a marshmallow.
+// The silhouette still steps in and out by a pixel every few rows: that ragged edge is what makes
+// the outline read as fur rather than as a fridge.
+const Y_WIDE  ='ooFFFFFFFFffffffffffssssssssoo';
 const Y_NARROW='.ooFFFFFFFffffffffffsssssssoo.';
-const Y_BELLY ='ooFFFFFFffbbbbbbbbbbssssssssoo';
-const Y_BELLYN='.ooFFFFFffbbbbbbbbbbsssssssoo.';
+const Y_CHEST ='ooFFFFFFFFffffddffffssssssssoo';   // the crease down a slab of a chest
+const Y_WAIST ='..ooFFFFFFFffffffffsssssssoo..';
+const Y_WAISTN='...ooFFFFFFffffffffssssssoo...';
 SP.yetiTorso=makeSprite([
-  '......oooooooooooooooooo......',
-  '....ooFFFFFffffffffsssssoo....',
-  '..ooFFFFFFFffffffffsssssssoo..',
-  Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW,
-  Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLYN,
-  '..ooFFFFFFFffffffffsssssssoo..',
-  '..ooFFFFFFFffffffffsssssssoo..',
-  '...ooFFFFFFffffffffssssssoo...',
+  '...oooooooooooooooooooooooo...',   // shoulders slope out rather than starting square: a flat
+  Y_NARROW, Y_WIDE, Y_WIDE, Y_WIDE,  // top edge on a 30-wide box reads as a fridge, not a back
+  Y_CHEST, Y_CHEST, Y_NARROW, Y_CHEST,
+  Y_CHEST, Y_WIDE, Y_NARROW,
+  Y_WAIST, Y_WAIST, Y_WAISTN, Y_WAIST,
+  Y_WAIST, Y_WAISTN, Y_WAIST, Y_WAIST,
+  Y_WAISTN, Y_WAIST, Y_WAIST, Y_WAISTN,
+  Y_WAISTN, Y_WAISTN, Y_WAISTN,
   '...ooFFFFFFffffffffssssssoo...',
   '...ooFFFFFFffffffffssssssoo...',
   '...oooooooooooooooooooooooo...',
 ],YETI_BODY,15,32);
+// Longer in the reach than the first pass, ending in three claws rather than a mitten: two pixels
+// of nail at the knuckle tapering to a point. Every claw is boxed in outline and tipped in it,
+// because pale nails against a white hill on white fur are simply not there — the outline is the
+// only thing carrying their shape at this size.
 SP.yetiArm=makeSprite([
   '..oooooo..',
   ...rep('.oFFffsso.',4),'oFFffffsso',
   ...rep('.oFFffsso.',4),'oFFffffsso',
   ...rep('.oFFffsso.',3),
-  'oFFffffsso','oFFffffsso','oFFffffsso',
-  'oCCCCCCCCo','.CC.CC.CC.',
+  'oFFffffsso','oFFffffsso',
+  'oCCCCCCCCo','oCCCCCCCCo',
+  'oNNoNNoNNo','oNnoNnoNno',
+  'oNooNooNoo','.o..o..o..',
 ],YETI_BODY,5,2);
 SP.yetiLeg=makeSprite([
   '..oooooooo..',
   ...rep('.oFFffffsso.',6),'oFFffffffsso',
-  ...rep('.oFFffffsso.',6),
+  ...rep('.oFFffffsso.',4),
   'oFFffffffsso','oFFffffffsso','oFFffffffsso',
-  'oCCCCCCCCCCo','.CC..CC..CC.',
+  'oCCCCCCCCCCo','oCCCCCCCCCCo',
+  'oNNooNNooNNo','.oo..oo..oo.',
 ],YETI_BODY,6,2);
 const Y_HEAD_MID='ooFFFFFffffffffsssssoo';
+// The brow sits over the eyes only, never edge to edge: a dark band across the whole head merges
+// with the eyes into one stripe and reads as a robot's visor, which is what the first pass did.
+// Each socket is high and wide at the outer corner and narrows to a point at the inner one — that
+// slant is the scowl, and it survives all the way down to a sprite you can barely see.
 const YETI_HEAD_ROWS=[
   '...oooooooooooooooo...',
   '.ooFFFFffffffffssssoo.',
   Y_HEAD_MID,
-  'ooFFFFggggggggggssssoo',   // heavy brow ridge, shading the sockets below it
-  'ooFFFFeeeeffeeeessssoo',   // eyes
-  'ooFFFFWeeeffWeeessssoo',
-  'ooFFFFeeeeffeeeessssoo',
-  Y_HEAD_MID,
-  'ooFFFFmmmmmmmmmmssssoo',   // muzzle, which the animated mouth is drawn over
+  'ooFFFggffffffffggsssoo',   // ridge starts high, out at the corners
+  'ooFFFgggffffffgggsssoo',   // and thickens inward, overhanging the sockets
+  'ooFFFeeggffffggeesssoo',   // so the eye shows at the outer end while the brow still shades the inner
+  'ooFFFeeeWffffWeeesssoo',   // widest here, glinting toward you
+  'ooFFFFFeeffffeesssssoo',   // and closing to a point at the inner corner
+  'ooFFFFmmmmkkmmmmssssoo',   // muzzle and a dark nose
+  'ooFFFFmmmmmmmmmmssssoo',   // the band the animated jaw is drawn over
   'ooFFFFmmmmmmmmmmssssoo',
-  Y_HEAD_MID,
   Y_HEAD_MID,
   '.ooFFFFffffffffssssoo.',
   '..oooooooooooooooooo..',
 ];
-const Y_HEAD_PAL={o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',m:'#c3cfdd'};
+const Y_HEAD_PAL={o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',m:'#c3cfdd',k:'#3a4050'};
 SP.yetiHead    =makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
-  {g:'#9fadc0',e:'#101018',W:'#ffffff'})),11,14);
+  {g:'#7c8ca4',e:'#101018',W:'#ffffff'})),11,14);
 // Palette swap instead of a second drawing: the yeti's eyes redden as it closes in, giving the
 // speed ramp in update() something you can actually see.
 SP.yetiHeadRage=makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
-  {g:'#c49a9a',e:'#e02020',W:'#ffd0d0'})),11,14);
+  {g:'#b0706c',e:'#e02020',W:'#ffd0d0'})),11,14);
 // -- scenery --
 // Each scenery type is a small family of variants rather than one stamp. The obstacle's v field
 // (assigned at spawn) picks one, so a hillside no longer looks like the same tree photocopied.
@@ -1121,33 +1250,50 @@ function drawYeti(x,y,st){
   // stacked rects rather than one slab, so the shadow reads as a pool under the feet
   g.fillStyle='rgba(96,116,142,.22)';
   g.fillRect(x-10,y-3,20,5); g.fillRect(x-13,y-2,26,3);
-  // legs: one lifts while the other plants, and each strides forward as it swings
-  blit(SP.yetiLeg, x-8+Math.round(ph*2),  y-16-Math.max(0,lift));
-  blit(SP.yetiLeg, x+8-Math.round(ph*2),  y-16-Math.max(0,-lift));
+  // legs: one lifts while the other plants, and each strides forward as it swings. The stride is
+  // long and the arms swing wide and hang away from the body — a short stride under arms held
+  // close is a waddle, which is what the first pass did.
+  blit(SP.yetiLeg, x-8+Math.round(ph*3),  y-16-Math.max(0,lift));
+  blit(SP.yetiLeg, x+8-Math.round(ph*3),  y-16-Math.max(0,-lift));
   blit(SP.yetiTorso, x, y-14+bob);
   // arms counter-swing against the legs, and reach out to grab during the meal. The shoulder
   // sits inside the torso outline, not level with its edge, so the join has no visible seam.
   for(const sgn of [-1,1]){
     g.save(); g.translate(x+sgn*12, y-40+bob);
     // eating: both arms raised inward, holding the meal up to the mouth. Roaring: thrown wide.
-    g.rotate(eat ? sgn*2.6 : roar ? -sgn*2.3 : -sgn*(0.08+ph*sgn*0.30));
+    g.rotate(eat ? sgn*2.6 : roar ? -sgn*2.3 : -sgn*(0.30+ph*sgn*0.55));
     blit(SP.yetiArm,0,0);
     g.restore();
   }
-  const hy=y-45+bob-(roar?2:0);                 // head thrown back mid-roar
+  // sunk into the shoulders rather than perched on top of them, so it runs hunched
+  const hy=y-44+bob-(roar?2:0);                 // head thrown back mid-roar
   blit(rage>0.5?SP.yetiHeadRage:SP.yetiHead, x, hy);
   const my=hy-6;   // lines up with the muzzle band baked into the head art
   if(eat||roar){
     // eating chomps on a timer; the roar holds its jaw wide and shudders
     const gape=eat?(Math.floor(st.eatT*6)%2)*3:3+Math.round(Math.sin(st.t*30));
-    g.fillStyle='#101018'; g.fillRect(x-6,my,12,5+gape);
-    g.fillStyle='#a02020'; g.fillRect(x-4,my+2,8,2+gape);
-    g.fillStyle='#ffffff';
-    g.fillRect(x-6,my,2,2); g.fillRect(x+4,my,2,2);
-    g.fillRect(x-6,my+3+gape,2,2); g.fillRect(x+4,my+3+gape,2,2);
+    const h=6+gape;
+    g.fillStyle='#101018'; g.fillRect(x-7,my,14,h);          // the maw
+    g.fillStyle='#a02020'; g.fillRect(x-5,my+3,10,h-5);      // throat
+    g.fillStyle='#ffffff';                                   // and two rows of them, interlocking
+    fang(x-6,my,3,true);   fang(x-3,my,4,true);   fang(x+1,my,4,true);   fang(x+4,my,3,true);
+    fang(x-6,my+h-3,3,false); fang(x-2,my+h-4,4,false);
+    fang(x+2,my+h-4,4,false); fang(x+5,my+h-3,3,false);
   }else{
-    g.fillStyle='#4c5668'; g.fillRect(x-4,my+1,8,2);
+    // Not a shut mouth but a held snarl: the jaw hangs open on its teeth even at rest. A closed
+    // line for a mouth is most of what made this thing look pleased with itself.
+    g.fillStyle='#101018'; g.fillRect(x-6,my+1,12,5);
+    g.fillStyle='#7a1c1c'; g.fillRect(x-4,my+3,8,2);
+    g.fillStyle='#ffffff';
+    fang(x-5,my+1,3,true);  fang(x-1,my+1,3,true);  fang(x+3,my+1,3,true);
+    fang(x-4,my+4,2,false); fang(x+2,my+4,2,false);
   }
+}
+// One tooth: two pixels of gum tapering to a single-pixel point, hanging down from the upper jaw
+// or standing up from the lower one.
+function fang(fx,fy,h,down){
+  g.fillRect(fx, down?fy:fy+1, 2, h-1);
+  g.fillRect(fx, down?fy+h-1:fy, 1, 1);
 }
 
 function draw(){
@@ -1223,15 +1369,17 @@ function draw(){
   // (boxes are still laid out in world units, then scaled up to the buffer grid, so the numbers
   // stay comparable with the world-unit text coordinates that get drawn over them below)
   const meters=Math.floor(Math.max(0,P.y/PX_PER_M));
-  box(BW-96,3,93,32,'rgba(255,255,255,.92)');
+  const showHud=gamestate!=='title';        // the menu is the whole screen: no run to report on yet
+  if(showHud) box(BW-96,3,93,32,'rgba(255,255,255,.92)');
 
   // desktop control hint box background (touch users have on-screen buttons instead)
   const showHint=!touchMode && gamestate!=='title';
   if(showHint) box(3,BH-42,132,39,'rgba(255,255,255,.82)');
+  // the d-pad is for skiing; menus are tapped directly, and it would only cover them up
+  touchui.classList.toggle('show', touchMode && (gamestate==='play'||gamestate==='paused'));
 
-  let titleY=0, overY=0, pauseY=0;
-  if(gamestate==='title'){       titleY=panel(240,178); drawCharIcons(titleY); }
-  else if(gamestate==='over')   overY=panel(220,100);
+  let pauseY=0;
+  if(menuOpen())                drawMenu();          // panels/boxes now, their labels queued for below
   else if(gamestate==='paused') pauseY=panel(196,94);
 
   ctx.drawImage(buf,0,0,cv.width,cv.height);
@@ -1252,33 +1400,36 @@ function draw(){
   }
 
   // ---- text, drawn straight onto the full-resolution canvas for crisp anti-aliasing ----
-  if(hunting()){
-    ctext('time  '+timeLeft.toFixed(1)+'s', BW-90,6,8,{color:timeLeft<10?'#c22':'#112',bold:timeLeft<10});
-    ctext('eaten '+eaten, BW-90,15,8);
-    ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,24,8);
-    if(keys['f']&&gamestate==='play') ctext('SPRINT!', BW-90,36,8,{color:'#c22'});
-  }else{
-    ctext('dist  '+meters+' m', BW-90,6,8);
-    ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15,8);
-    ctext('style '+Math.floor(style), BW-90,24,8);
-    if(keys['f']&&gamestate==='play'&&P.state==='ski'){
-      ctext('TURBO!', BW-90,36,8,{color:'#c22'});
+  if(showHud){
+    if(hunting()){
+      ctext('time  '+timeLeft.toFixed(1)+'s', BW-90,6,8,{color:timeLeft<10?'#c22':'#112',bold:timeLeft<10});
+      ctext('eaten '+eaten, BW-90,15,8);
+      ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,24,8);
+      if(held.turbo&&gamestate==='play') ctext('SPRINT!', BW-90,36,8,{color:'#c22'});
+    }else{
+      ctext('dist  '+meters+' m', BW-90,6,8);
+      ctext('speed '+Math.round(P.speed/PX_PER_M)+' m/s', BW-90,15,8);
+      ctext('style '+Math.floor(style), BW-90,24,8);
+      if(held.turbo&&gamestate==='play'&&P.state==='ski'){
+        ctext('TURBO!', BW-90,36,8,{color:'#c22'});
+      }
     }
   }
   if(showHint){
+    const L=keyLabel(binds.left), R=keyLabel(binds.right), D=keyLabel(binds.down);
+    const Up=keyLabel(binds.up), F=keyLabel(binds.turbo);
     if(hunting()){
-      ctext('← → steer   ↓ straight on',6,BH-39,7);
-      ctext('hold F to sprint',6,BH-30,7);
+      ctext(L+' '+R+' steer   '+D+' straight on',6,BH-39,7);
+      ctext('hold '+F+' to sprint',6,BH-30,7);
       ctext('run them down and eat them',6,BH-21,7);
     }else{
-      ctext('← → steer   ↓ down',6,BH-39,7);
-      ctext('hold F for turbo',6,BH-30,7);
-      ctext('in air: ← → spin  ↑ ↓ flip',6,BH-21,7);
+      ctext(L+' '+R+' steer   '+D+' down',6,BH-39,7);
+      ctext('hold '+F+' for turbo',6,BH-30,7);
+      ctext('in air: '+L+' '+R+' spin  '+Up+' '+D+' flip',6,BH-21,7);
     }
     ctext('Esc: pause    M: music '+(MUS.muted?'off':'on'),6,BH-12,7);
   }
-  if(gamestate==='title')       drawTitleText(titleY);
-  else if(gamestate==='over')   drawOverText(overY,meters);
+  if(menuOpen())                drawMenuLabels();
   else if(gamestate==='paused') drawPausedText(pauseY);
 }
 // menus/HUD text were laid out assuming a ~320-wide world; on a narrow phone BW can be far
@@ -1315,69 +1466,291 @@ function panel(w,h){
 // Spacing between the three menu portraits, and the row they stand on. Shared so the highlight,
 // the icons and the name underneath cannot drift apart.
 function iconGap(){ return Math.min(62,BW*0.26); }
-// Drawn during the buffer pass, unlike the rest of the menu: these are sprites, and sprites live
-// on the pixel layer. The characters draw themselves through the same functions the game uses,
-// so a portrait can never fall out of step with how that character actually looks on the hill.
-function drawCharIcons(y){
-  const gap=iconGap();
+
+// ---------- menu ----------
+// Every screen is built the same way: boxes and sprites go down on the pixel buffer during the
+// normal draw pass, their labels are queued and stamped onto the full-resolution canvas afterwards
+// (the same split the HUD uses to keep text crisp), and every clickable thing is pushed onto
+// uiHits in keyboard-focus order. One list drives hit-testing, hover and arrow-key focus, so those
+// three can never disagree about where a button is or which one is highlighted.
+//
+// Layout is in world units scaled by uiScale(), which is BW/320 — the panel therefore keeps the
+// same proportions on a phone as on a desktop, and since ctext() applies that same factor to type,
+// the text inside it stays the same size relative to its box at every screen width.
+let menu='main';           // main | chars | scores | controls
+let menuSel=0;             // index into uiHits: the focused (or hovered) widget
+let rebindAction=null;     // controls screen: the action waiting to be told its new key
+let uiHits=[], menuTexts=[];
+const LOGO='SKIBIDIFREE';
+const BACK_TO={chars:1,scores:2,controls:3};   // returning from a screen re-focuses the row that opened it
+// Row heights, the one place the layout is not purely proportional: a finger needs a bigger target
+// than a mouse pointer, so touch devices get taller rows and everyone else keeps the tight ones.
+function btnH(S,base){ return Math.round(base*(touchMode?1.35:1)*S); }
+function mtext(str,x,y,size,opts){ menuTexts.push({str:str,x:x,y:y,size:size,opts:opts||{}}); }
+function mlogo(x,y,maxW,size){ menuTexts.push({logo:true,x:x,y:y,maxW:maxW,size:size}); }
+// A panel can never be taller than the world is: in a freakishly short window (a browser dragged
+// down to a strip) the screens clamp to this BEFORE laying anything out, so a widget positioned
+// off the panel's bottom edge — the BACK button — still lands inside the box that gets drawn.
+function fitH(h){ return Math.min(h,BH-8); }
+function mpanel(x,w,h){
+  h=fitH(h);
+  const y=Math.round((BH-h)/2);
+  box(x,y,w,h,'rgba(244,248,255,.96)');
+  g.strokeRect(x*U+2.5,y*U+2.5,w*U-5,h*U-5);
+  return y;
+}
+// One widget. The box lands on the pixel layer immediately; the label is queued. A focused widget
+// is filled rather than merely outlined, because an outline is one buffer pixel wide and vanishes
+// on a phone. value is the right-hand column: what the row is currently set to.
+function mbtn(x,y,w,h,id,label,value,opts){
+  opts=opts||{};
+  const sel=uiHits.length===menuSel;
+  uiHits.push({x:x,y:y,w:w,h:h,id:id});
+  box(x,y,w,h,sel?'rgba(74,132,201,.95)':'rgba(255,255,255,.82)');
+  const S=uiScale(), ts=opts.size||8, ty=y+(h-ts*S)/2;
+  const fg=sel?'#ffffff':'#12243c';
+  if(opts.center){ mtext(label,x+w/2,ty,ts,{align:'center',bold:true,color:fg}); return; }
+  mtext(label,x+6*S,ty,ts,{color:fg});
+  if(value!=null) mtext(value,x+w-6*S,ty,ts,{align:'right',bold:true,color:sel?'#e6f1ff':'#2f6ba8'});
+}
+// A little stepped conifer. Drawn as rectangles rather than blitted from SP.tree because the
+// obstacle sprites are authored at one fixed size and this one has to scale with the panel.
+function pine(cx,base,h){
+  const rows=5, rh=h/rows;
+  for(let i=0;i<rows;i++){
+    const wi=h*(0.20+0.60*(i+1)/rows), top=base-h+i*rh;
+    const px=Math.round((cx-wi/2)*U), py=Math.round(top*U);
+    const pw=Math.max(1,Math.round(wi*U)), ph=Math.max(1,Math.round((rh+0.6)*U));
+    g.fillStyle='#1c6b2a'; g.fillRect(px,py,pw,ph);
+    g.fillStyle='#2f9440'; g.fillRect(px,py,Math.max(1,Math.round(pw*0.42)),ph);
+  }
+}
+// The wordmark: an extruded slab with a hard navy edge and an ice gradient down the face. Drawn on
+// the text layer like the rest of the type, so it stays sharp at any zoom, and auto-shrunk to the
+// width it is given rather than trusting a hard-coded size to fit every window.
+function drawLogo(cx,y,maxW,size){
+  let px=Math.max(6,Math.round(size*PXS*uiScale()));
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.font='bold '+px+'px monospace';
+  const wide=ctx.measureText(LOGO).width;
+  if(wide>maxW*PXS){ px=Math.max(6,Math.floor(px*maxW*PXS/wide)); ctx.font='bold '+px+'px monospace'; }
+  const X=Math.round(cx*PXS), Y=Math.round(y*PXS), d=Math.max(2,Math.round(px*0.11));
+  ctx.lineJoin='round';
+  ctx.fillStyle='#24406b';
+  for(let i=d;i>0;i--) ctx.fillText(LOGO,X+i*0.45,Y+i);   // the extrusion, back to front
+  ctx.strokeStyle='#101f38'; ctx.lineWidth=Math.max(2,px*0.13);
+  ctx.strokeText(LOGO,X,Y);
+  const gr=ctx.createLinearGradient(0,Y,0,Y+px);
+  gr.addColorStop(0,'#ffffff'); gr.addColorStop(0.48,'#cfe8ff');
+  gr.addColorStop(0.52,'#7fb6ec'); gr.addColorStop(1,'#3d7fd0');
+  ctx.fillStyle=gr; ctx.fillText(LOGO,X,Y);
+  ctx.restore();
+}
+function bestLabel(){
+  if(hunting()) return best.eaten>0?best.eaten+' eaten':'—';
+  return best.dist>0?Math.floor(best.dist)+' m':'—';
+}
+function bindStyle(){                 // name the current mapping if it is one of the presets
+  for(const n in PRESETS){
+    let same=true;
+    for(const a of ACTIONS) if(binds[a]!==PRESETS[n][a]) same=false;
+    if(same) return n==='wasd'?'WASD':'ARROWS';
+  }
+  return 'CUSTOM';
+}
+function drawMenu(){
+  uiHits=[]; menuTexts=[];
+  const S=uiScale();
+  const w=Math.min(Math.round(304*S),BW-8), x=Math.round((BW-w)/2);
+  if(gamestate==='over')        overScreen(x,w,S);
+  else if(menu==='chars')       charScreen(x,w,S);
+  else if(menu==='scores')      scoreScreen(x,w,S);
+  else if(menu==='controls')    controlScreen(x,w,S);
+  else                          mainScreen(x,w,S);
+  if(menuSel>=uiHits.length) menuSel=Math.max(0,uiHits.length-1);
+}
+function drawMenuLabels(){
+  for(const t of menuTexts){
+    if(t.logo) drawLogo(t.x,t.y,t.maxW,t.size);
+    else ctext(t.str,t.x,t.y,t.size,t.opts);
+  }
+}
+function mainScreen(x,w,S){
+  const bh=btnH(S,19), gp=Math.round(4*S), pad=Math.round(12*S), head=Math.round(51*S);
+  const h=head+5*bh+4*gp+pad;
+  const y=mpanel(x,w,h);
+  // wordmark, the shelf of snow it stands on, and a pine at each end of that shelf
+  mlogo(BW/2,y+Math.round(7*S),w-Math.round(20*S),22);
+  const shelf=y+Math.round(36*S), inset=Math.round(15*S), th=Math.max(1,Math.round(1.5*S));
+  g.fillStyle='#e8f2fd'; g.fillRect((x+inset)*U,shelf*U,(w-2*inset)*U,th*U);
+  g.fillStyle='#a8c6e6'; g.fillRect((x+inset)*U,(shelf+th)*U,(w-2*inset)*U,Math.max(1,Math.round(S))*U);
+  pine(x+inset+Math.round(9*S),shelf+th,Math.round(15*S));
+  pine(x+w-inset-Math.round(9*S),shelf+th,Math.round(15*S));
+  mtext('endless downhill  ·  mind the yeti',BW/2,y+Math.round(40*S),7,{align:'center',color:'#5b83ae'});
+  const bx=x+Math.round(20*S), bw=w-Math.round(40*S), step=bh+gp;
+  let by=y+head;
+  mbtn(bx,by,bw,bh,'play','▶  PLAY',null,{center:true,size:9});               by+=step;
+  mbtn(bx,by,bw,bh,'chars','CHARACTER',CHAR_NAMES[equip]);                    by+=step;
+  mbtn(bx,by,bw,bh,'scores','LEADERBOARD',bestLabel());                       by+=step;
+  mbtn(bx,by,bw,bh,'controls','CONTROLS',bindStyle());                        by+=step;
+  mbtn(bx,by,bw,bh,'music','MUSIC',MUS.muted?'OFF':'ON');
+  mtext('↑ ↓ move    ENTER select    or click',BW/2,by+bh+Math.round(3*S),6,
+    {align:'center',color:'#7a97b8'});
+}
+// The portraits draw themselves through the same functions the game uses, so one can never fall
+// out of step with how that character actually looks on the hill. They are pixel art at a fixed
+// size, so unlike everything else here their cell is in plain world units rather than scaled ones.
+function charScreen(x,w,S){
+  const bh=btnH(S,19), pad=Math.round(12*S), ICON=50;
+  const head=Math.round(23*S), foot=Math.round(40*S);
+  const y=mpanel(x,w,head+ICON+foot+bh+pad);
+  mtext('SELECT CHARACTER',BW/2,y+Math.round(7*S),10,{align:'center',bold:true});
+  const row=y+head, gap=iconGap();
   CHARS.forEach((c,i)=>{
-    const cx=BW/2+(i-1)*gap;
-    if(c===equip) box(cx-gap*0.28, y+38, gap*0.56, 40, 'rgba(176,203,235,.5)');
+    const cx=BW/2+(i-1)*gap, cw=gap*0.78, sel=uiHits.length===menuSel;
+    uiHits.push({x:cx-cw/2,y:row,w:cw,h:ICON,id:'char:'+c});
+    if(c===equip)     box(cx-cw/2,row,cw,ICON,sel?'rgba(74,132,201,.80)':'rgba(150,190,235,.55)');
+    else if(sel)      box(cx-cw/2,row,cw,ICON,'rgba(214,232,250,.85)');
     // The two rigs hang off their origins differently — skis run on past the boots, a yeti stands
     // on its feet — so each gets the ground line that centres it in the same cell.
-    const gy=Math.round((c==='yeti'?y+76:y+64)*U), x=Math.round(cx*U);
+    const gy=Math.round((row+ICON*(c==='yeti'?0.94:0.68))*U), sx=Math.round(cx*U);
     if(c==='yeti'){
       // cycled rather than free-running, so the portrait roars every few seconds instead of once
-      drawYeti(x,gy,{state:'chase',t:0.25+(timeNow%4.5),eatT:0});
+      drawYeti(sx,gy,{state:'chase',t:0.25+(timeNow%4.5),eatT:0});
     }else{
-      drawSkier(x,gy,{equip:c,state:'ski',dir:0,speed:120,z:0,spin:0,flip:0,
-                      landT:0,crashT:0,turbo:false});
+      drawSkier(sx,gy,{equip:c,state:'ski',dir:0,speed:120,z:0,spin:0,flip:0,
+                       landT:0,crashT:0,turbo:false});
     }
   });
+  // Whichever portrait the focus is on describes itself; with the focus on BACK, the one you are
+  // actually equipped with does.
+  const shown=menuSel<CHARS.length?CHARS[menuSel]:equip;
+  const ty=row+ICON+Math.round(4*S);
+  mtext(CHAR_NAMES[shown]+(shown===equip?'   ·   selected':''),BW/2,ty,9,{align:'center',bold:true});
+  mtext(CHAR_BLURB[shown][0],BW/2,ty+Math.round(13*S),7,{align:'center',color:'#456'});
+  mtext(CHAR_BLURB[shown][1],BW/2,ty+Math.round(22*S),7,{align:'center',color:'#456'});
+  mbtn(x+Math.round(20*S),row+ICON+foot,w-Math.round(40*S),bh,'back','BACK',null,{center:true});
 }
-function drawTitleText(y){
-  ctext('S K I B I D I F R E E', BW/2, y+8, 16, {align:'center',bold:true});
-  ctext(hunting()
-      ? (best.eaten>0 ? ('your best hunt: '+best.eaten+' eaten') : 'no hunts yet - go and get one')
-      : (best.dist>0  ? ('your best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style))
-                      : 'no runs yet - this is your first!'),
-    BW/2, y+26, 8, {align:'center',color:'#458'});
-  ctext('◄  '+CHAR_NAMES[equip]+'  ►', BW/2, y+82, 8, {align:'center',bold:true});
-  ctext('(← → to change)', BW/2, y+93, 7, {align:'center',color:'#458'});
-  if(hunting()){
-    ctext('you are the yeti - hunt the hill', BW/2, y+106, 8, {align:'center'});
-    ctext('← →  steer      ↓  straight on', BW/2, y+119, 8, {align:'center'});
-    ctext('hold F to sprint them down', BW/2, y+132, 8, {align:'center'});
-    ctext('eat as many as you can in '+HUNT_SECS+'s', BW/2, y+145, 8, {align:'center'});
-  }else{
-    ctext('← →  steer      ↓  straight down', BW/2, y+106, 8, {align:'center'});
-    ctext('hold F for turbo', BW/2, y+119, 8, {align:'center'});
-    ctext('hit ramps for style points', BW/2, y+132, 8, {align:'center'});
-    ctext('in the air: ← → spin   ↑ ↓ flip', BW/2, y+145, 8, {align:'center'});
+function lbSection(lx,rx,ty,S,lh,title,list,fmt){
+  mtext(title,lx,ty,8,{bold:true,color:'#1a5f9e'});
+  ty+=Math.round(12*S);
+  for(let i=0;i<LB_MAX;i++){
+    const e=list[i], fresh=!!e&&e===lbNew;   // the row the run you just finished earned
+    if(e){
+      const cols=fmt(e);
+      mtext((i+1)+'.  '+cols[0],lx,ty,7,{color:fresh?'#1a8a3a':'#112',bold:fresh});
+      if(cols[1]) mtext(cols[1],rx,ty,7,{align:'right',color:fresh?'#1a8a3a':'#5b83ae'});
+    }else{
+      mtext((i+1)+'.  —',lx,ty,7,{color:'#9fb2c6'});
+    }
+    ty+=lh;
   }
-  if(Math.floor(timeNow*2)%2)
-    ctext(hunting()?'- press ↓ or SPACE to hunt -':'- press ↓ or SPACE to ski -',
-      BW/2, y+161, 8, {align:'center'});
+  return ty;
 }
-function drawOverText(y,meters){
+function scoreScreen(x,w,S){
+  const bh=btnH(S,19), pad=Math.round(12*S), lh=Math.round(9*S);
+  const head=Math.round(23*S), sec=Math.round(12*S)+LB_MAX*lh, gapS=Math.round(9*S);
+  const h=fitH(head+2*sec+gapS+Math.round(6*S)+bh+pad);
+  const y=mpanel(x,w,h);
+  mtext('LEADERBOARD',BW/2,y+Math.round(7*S),10,{align:'center',bold:true});
+  const lx=x+Math.round(16*S), rx=x+w-Math.round(16*S);
+  let ty=y+head;
+  ty=lbSection(lx,rx,ty,S,lh,'DOWNHILL',board.run,
+    e=>[e.d+' m'+(e.e==='board'?'   board':''),
+        (e.s?'style '+e.s:'')+(e.t?'   '+stamp(e.t):'')]);
+  ty+=gapS;
+  lbSection(lx,rx,ty,S,lh,'HUNT (as the yeti)',board.hunt,
+    e=>[e.n+(e.n===1?' skier':' skiers'),e.t?stamp(e.t):'']);
+  mbtn(x+Math.round(20*S),y+h-pad-bh,w-Math.round(40*S),bh,'back','BACK',null,{center:true});
+}
+function controlScreen(x,w,S){
+  const bh=btnH(S,19), pad=Math.round(12*S), rh=btnH(S,16), gp=Math.round(3*S);
+  const head=Math.round(23*S), notes=Math.round(24*S);
+  const h=fitH(head+ACTIONS.length*(rh+gp)+Math.round(7*S)+rh+notes+bh+pad);
+  const y=mpanel(x,w,h);
+  mtext('CONTROLS',BW/2,y+Math.round(7*S),10,{align:'center',bold:true});
+  const bx=x+Math.round(16*S), bw=w-Math.round(32*S);
+  let by=y+head;
+  for(const a of ACTIONS){
+    mbtn(bx,by,bw,rh,'bind:'+a,ACTION_NAMES[a],
+      rebindAction===a?'press a key':keyLabel(binds[a]),{size:7});
+    by+=rh+gp;
+  }
+  by+=Math.round(7*S);
+  const half=(bw-Math.round(6*S))/2;
+  mbtn(bx,by,half,rh,'preset:arrows','ARROW KEYS',null,{center:true,size:7});
+  mbtn(bx+half+Math.round(6*S),by,half,rh,'preset:wasd','WASD',null,{center:true,size:7});
+  by+=rh;
+  mtext(rebindAction?'press any key to bind it  ·  Esc cancels'
+                    :'pick a row to put it on another key',
+    BW/2,by+Math.round(5*S),7,{align:'center',bold:!!rebindAction,color:rebindAction?'#c22':'#5b83ae'});
+  mtext('fixed:  Esc pause  ·  M music  ·  Q quit (paused)',
+    BW/2,by+Math.round(15*S),6,{align:'center',color:'#7a97b8'});
+  mbtn(bx,y+h-pad-bh,bw,bh,'back','BACK',null,{center:true});
+}
+function overScreen(x,w,S){
+  const bh=btnH(S,19), pad=Math.round(12*S), head=Math.round(84*S);
+  const h=fitH(head+bh+pad);
+  const y=mpanel(x,w,h);
+  const meters=Math.floor(Math.max(0,P.y/PX_PER_M));
   if(hunting()){
-    ctext("TIME'S UP", BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
-    ctext('skiers eaten: '+eaten+(newBestEaten?'  NEW BEST!':''), BW/2, y+38, 8,
+    mtext("TIME'S UP",BW/2,y+Math.round(10*S),13,{align:'center',bold:true,color:'#a22'});
+    mtext('skiers eaten: '+eaten+(newBestEaten?'   NEW BEST!':''),BW/2,y+Math.round(32*S),8,
       {align:'center',bold:true,color:newBestEaten?'#1a8a3a':'#112'});
-    ctext(eaten===0?'not one. they all got away.'
+    mtext(eaten===0?'not one. they all got away.'
          :eaten===1?'one. a lean day on the mountain.'
-                   :'a good hunt.', BW/2, y+50, 8, {align:'center',color:'#458'});
-    ctext('best hunt: '+best.eaten, BW/2, y+64, 8, {align:'center'});
-    if(Math.floor(timeNow*2)%2) ctext('- press SPACE to hunt again -', BW/2, y+82, 8, {align:'center'});
+                   :'a good hunt.',BW/2,y+Math.round(44*S),8,{align:'center',color:'#458'});
+    mtext('best hunt: '+best.eaten,BW/2,y+Math.round(57*S),8,{align:'center'});
+  }else{
+    mtext('THE YETI GOT YOU',BW/2,y+Math.round(10*S),13,{align:'center',bold:true,color:'#a22'});
+    mtext('distance: '+meters+' m'+(newBestDist?'   NEW BEST!':''),BW/2,y+Math.round(32*S),8,
+      {align:'center',color:newBestDist?'#1a8a3a':'#112'});
+    mtext('style: '+Math.floor(style)+(newBestStyle?'   NEW BEST!':''),BW/2,y+Math.round(44*S),8,
+      {align:'center',color:newBestStyle?'#1a8a3a':'#112'});
+    mtext('best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style),
+      BW/2,y+Math.round(57*S),8,{align:'center'});
+  }
+  if(lbNew) mtext('·  new leaderboard entry  ·',BW/2,y+Math.round(70*S),7,{align:'center',color:'#1a8a3a'});
+  const bx=x+Math.round(20*S), bw=(w-Math.round(46*S))/2, by=y+h-pad-bh;
+  mbtn(bx,by,bw,bh,'again','PLAY AGAIN',null,{center:true,size:7});
+  mbtn(bx+bw+Math.round(6*S),by,bw,bh,'menu','MAIN MENU',null,{center:true,size:7});
+}
+function menuMove(d){
+  if(!uiHits.length) return;
+  menuSel=(menuSel+d+uiHits.length)%uiHits.length;
+  sndBlip();
+}
+// k is the raw key, a is the action it is bound to (if any) — so a player on WASD navigates the
+// menus with the same keys they steer with, and the arrows keep working regardless.
+function menuKey(k,a){
+  if(!uiHits.length) return;
+  const id=uiHits[menuSel].id;
+  if(k==='arrowup'||a==='up')     { menuMove(-1); return; }
+  if(k==='arrowdown'||a==='down') { menuMove(1);  return; }
+  const lr=(k==='arrowleft'||a==='left')?-1:(k==='arrowright'||a==='right')?1:0;
+  if(lr){
+    if(id==='chars'){ cycleChar(lr); sndBlip(); }   // the old title-screen shortcut, still here
+    else if(menu==='chars'||gamestate==='over') menuMove(lr);
     return;
   }
-  ctext('THE YETI GOT YOU', BW/2, y+12, 12, {align:'center',bold:true,color:'#a22'});
-  ctext('distance: '+meters+' m'+(newBestDist?'  NEW BEST!':''), BW/2, y+38, 8,
-    {align:'center',color:newBestDist?'#1a8a3a':'#112'});
-  ctext('style: '+Math.floor(style)+(newBestStyle?'  NEW BEST!':''), BW/2, y+50, 8,
-    {align:'center',color:newBestStyle?'#1a8a3a':'#112'});
-  ctext('best: '+Math.floor(best.dist)+' m  ·  style '+Math.floor(best.style), BW/2, y+64, 8, {align:'center'});
-  if(Math.floor(timeNow*2)%2) ctext('- press SPACE to try again -', BW/2, y+82, 8, {align:'center'});
+  if(k===' '||k==='enter'){ menuActivate(id); return; }
+  if(gamestate==='over'&&k==='r') startRun();       // muscle memory from the old game-over screen
+}
+function menuActivate(id){
+  initAudio(); sndPick();
+  if(id==='play'||id==='again') { startRun(); return; }
+  if(id==='menu')               { toMenu(); return; }
+  if(id==='music')              { toggleMute(); return; }
+  if(id==='back')               { menuSel=BACK_TO[menu]||0; menu='main'; return; }
+  if(id==='chars'||id==='scores'||id==='controls'){
+    menu=id;
+    menuSel=id==='chars'?Math.max(0,CHARS.indexOf(equip)):0;
+    return;
+  }
+  if(id.slice(0,5)==='char:')   { setChar(id.slice(5)); menu='main'; menuSel=1; return; }
+  if(id.slice(0,5)==='bind:')   { rebindAction=id.slice(5); return; }
+  if(id.slice(0,7)==='preset:') { setPreset(id.slice(7)); return; }
 }
 function drawPausedText(y){
   ctext('PAUSED', BW/2, y+14, 14, {align:'center',bold:true});
@@ -1401,7 +1774,9 @@ window.GAME={get P(){return P},get yeti(){return yeti},get obstacles(){return ob
   get style(){return style},get popups(){return popups},
   get sprites(){return SP},get kits(){return KIT},
   get preys(){return preys},get eaten(){return eaten},get timeLeft(){return timeLeft},
-  get equip(){return equip},set equip(v){ if(CHARS.indexOf(v)>=0) equip=v; }};
+  get equip(){return equip},set equip(v){ setChar(v); },
+  get menu(){return menu},set menu(m){ menu=m; menuSel=0; },
+  get binds(){return binds},get board(){return board},get hits(){return uiHits}};
 </script>
 </body>
 </html>
