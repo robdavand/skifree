@@ -1000,67 +1000,82 @@ const KIT={
   board:kitFor({o:'#0a3020',k:'#146840',j:'#20a060',J:'#40c880',z:'#d8ffe8'},
                {k:'#9a7000',h:'#f0c020',H:'#ffe070'}),
 };
-// -- yeti: outlined throughout, because white fur on white snow had no silhouette at all, and
-// tapered from shoulder to waist so the outline reads as a body rather than a box --
-const YETI_BODY=pal({o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',b:'#f2f7ff',C:'#3a4050'});
-// The silhouette steps in and out by a pixel every few rows: that ragged edge is what makes the
-// outline read as fur rather than as a fridge, which is exactly how the first pass looked.
-const Y_WIDE ='ooFFFFFFFFffffffffffssssssssoo';
+// -- yeti: outlined throughout, because white fur on white snow had no silhouette at all --
+const YETI_BODY=pal({o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',d:'#9fb0c4',
+                     C:'#3a4050',N:'#f6f2e4',n:'#cfc7ae'});
+// Heaviest across the shoulders and chest and narrowing into the waist. The first pass tapered the
+// other way — narrow shoulders over a wide belly — and a pear shape reads as soft no matter what
+// is drawn on it, which is most of why the thing looked like a marshmallow.
+// The silhouette still steps in and out by a pixel every few rows: that ragged edge is what makes
+// the outline read as fur rather than as a fridge.
+const Y_WIDE  ='ooFFFFFFFFffffffffffssssssssoo';
 const Y_NARROW='.ooFFFFFFFffffffffffsssssssoo.';
-const Y_BELLY ='ooFFFFFFffbbbbbbbbbbssssssssoo';
-const Y_BELLYN='.ooFFFFFffbbbbbbbbbbsssssssoo.';
+const Y_CHEST ='ooFFFFFFFFffffddffffssssssssoo';   // the crease down a slab of a chest
+const Y_WAIST ='..ooFFFFFFFffffffffsssssssoo..';
+const Y_WAISTN='...ooFFFFFFffffffffssssssoo...';
 SP.yetiTorso=makeSprite([
-  '......oooooooooooooooooo......',
-  '....ooFFFFFffffffffsssssoo....',
-  '..ooFFFFFFFffffffffsssssssoo..',
-  Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_WIDE, Y_NARROW, Y_WIDE, Y_WIDE, Y_NARROW,
-  Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLY, Y_BELLYN, Y_BELLY, Y_BELLY, Y_BELLYN,
-  '..ooFFFFFFFffffffffsssssssoo..',
-  '..ooFFFFFFFffffffffsssssssoo..',
-  '...ooFFFFFFffffffffssssssoo...',
+  '...oooooooooooooooooooooooo...',   // shoulders slope out rather than starting square: a flat
+  Y_NARROW, Y_WIDE, Y_WIDE, Y_WIDE,  // top edge on a 30-wide box reads as a fridge, not a back
+  Y_CHEST, Y_CHEST, Y_NARROW, Y_CHEST,
+  Y_CHEST, Y_WIDE, Y_NARROW,
+  Y_WAIST, Y_WAIST, Y_WAISTN, Y_WAIST,
+  Y_WAIST, Y_WAISTN, Y_WAIST, Y_WAIST,
+  Y_WAISTN, Y_WAIST, Y_WAIST, Y_WAISTN,
+  Y_WAISTN, Y_WAISTN, Y_WAISTN,
   '...ooFFFFFFffffffffssssssoo...',
   '...ooFFFFFFffffffffssssssoo...',
   '...oooooooooooooooooooooooo...',
 ],YETI_BODY,15,32);
+// Longer in the reach than the first pass, ending in three claws rather than a mitten: two pixels
+// of nail at the knuckle tapering to a point. Every claw is boxed in outline and tipped in it,
+// because pale nails against a white hill on white fur are simply not there — the outline is the
+// only thing carrying their shape at this size.
 SP.yetiArm=makeSprite([
   '..oooooo..',
   ...rep('.oFFffsso.',4),'oFFffffsso',
   ...rep('.oFFffsso.',4),'oFFffffsso',
   ...rep('.oFFffsso.',3),
-  'oFFffffsso','oFFffffsso','oFFffffsso',
-  'oCCCCCCCCo','.CC.CC.CC.',
+  'oFFffffsso','oFFffffsso',
+  'oCCCCCCCCo','oCCCCCCCCo',
+  'oNNoNNoNNo','oNnoNnoNno',
+  'oNooNooNoo','.o..o..o..',
 ],YETI_BODY,5,2);
 SP.yetiLeg=makeSprite([
   '..oooooooo..',
   ...rep('.oFFffffsso.',6),'oFFffffffsso',
-  ...rep('.oFFffffsso.',6),
+  ...rep('.oFFffffsso.',4),
   'oFFffffffsso','oFFffffffsso','oFFffffffsso',
-  'oCCCCCCCCCCo','.CC..CC..CC.',
+  'oCCCCCCCCCCo','oCCCCCCCCCCo',
+  'oNNooNNooNNo','.oo..oo..oo.',
 ],YETI_BODY,6,2);
 const Y_HEAD_MID='ooFFFFFffffffffsssssoo';
+// The brow sits over the eyes only, never edge to edge: a dark band across the whole head merges
+// with the eyes into one stripe and reads as a robot's visor, which is what the first pass did.
+// Each socket is high and wide at the outer corner and narrows to a point at the inner one — that
+// slant is the scowl, and it survives all the way down to a sprite you can barely see.
 const YETI_HEAD_ROWS=[
   '...oooooooooooooooo...',
   '.ooFFFFffffffffssssoo.',
   Y_HEAD_MID,
-  'ooFFFFggggggggggssssoo',   // heavy brow ridge, shading the sockets below it
-  'ooFFFFeeeeffeeeessssoo',   // eyes
-  'ooFFFFWeeeffWeeessssoo',
-  'ooFFFFeeeeffeeeessssoo',
-  Y_HEAD_MID,
-  'ooFFFFmmmmmmmmmmssssoo',   // muzzle, which the animated mouth is drawn over
+  'ooFFFggffffffffggsssoo',   // ridge starts high, out at the corners
+  'ooFFFgggffffffgggsssoo',   // and thickens inward, overhanging the sockets
+  'ooFFFeeggffffggeesssoo',   // so the eye shows at the outer end while the brow still shades the inner
+  'ooFFFeeeWffffWeeesssoo',   // widest here, glinting toward you
+  'ooFFFFFeeffffeesssssoo',   // and closing to a point at the inner corner
+  'ooFFFFmmmmkkmmmmssssoo',   // muzzle and a dark nose
+  'ooFFFFmmmmmmmmmmssssoo',   // the band the animated jaw is drawn over
   'ooFFFFmmmmmmmmmmssssoo',
-  Y_HEAD_MID,
   Y_HEAD_MID,
   '.ooFFFFffffffffssssoo.',
   '..oooooooooooooooooo..',
 ];
-const Y_HEAD_PAL={o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',m:'#c3cfdd'};
+const Y_HEAD_PAL={o:'#4c5668',F:'#ffffff',f:'#dde5f0',s:'#b6c3d4',m:'#c3cfdd',k:'#3a4050'};
 SP.yetiHead    =makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
-  {g:'#9fadc0',e:'#101018',W:'#ffffff'})),11,14);
+  {g:'#7c8ca4',e:'#101018',W:'#ffffff'})),11,14);
 // Palette swap instead of a second drawing: the yeti's eyes redden as it closes in, giving the
 // speed ramp in update() something you can actually see.
 SP.yetiHeadRage=makeSprite(YETI_HEAD_ROWS,pal(Object.assign({},Y_HEAD_PAL,
-  {g:'#c49a9a',e:'#e02020',W:'#ffd0d0'})),11,14);
+  {g:'#b0706c',e:'#e02020',W:'#ffd0d0'})),11,14);
 // -- scenery --
 // Each scenery type is a small family of variants rather than one stamp. The obstacle's v field
 // (assigned at spawn) picks one, so a hillside no longer looks like the same tree photocopied.
@@ -1235,33 +1250,50 @@ function drawYeti(x,y,st){
   // stacked rects rather than one slab, so the shadow reads as a pool under the feet
   g.fillStyle='rgba(96,116,142,.22)';
   g.fillRect(x-10,y-3,20,5); g.fillRect(x-13,y-2,26,3);
-  // legs: one lifts while the other plants, and each strides forward as it swings
-  blit(SP.yetiLeg, x-8+Math.round(ph*2),  y-16-Math.max(0,lift));
-  blit(SP.yetiLeg, x+8-Math.round(ph*2),  y-16-Math.max(0,-lift));
+  // legs: one lifts while the other plants, and each strides forward as it swings. The stride is
+  // long and the arms swing wide and hang away from the body — a short stride under arms held
+  // close is a waddle, which is what the first pass did.
+  blit(SP.yetiLeg, x-8+Math.round(ph*3),  y-16-Math.max(0,lift));
+  blit(SP.yetiLeg, x+8-Math.round(ph*3),  y-16-Math.max(0,-lift));
   blit(SP.yetiTorso, x, y-14+bob);
   // arms counter-swing against the legs, and reach out to grab during the meal. The shoulder
   // sits inside the torso outline, not level with its edge, so the join has no visible seam.
   for(const sgn of [-1,1]){
     g.save(); g.translate(x+sgn*12, y-40+bob);
     // eating: both arms raised inward, holding the meal up to the mouth. Roaring: thrown wide.
-    g.rotate(eat ? sgn*2.6 : roar ? -sgn*2.3 : -sgn*(0.08+ph*sgn*0.30));
+    g.rotate(eat ? sgn*2.6 : roar ? -sgn*2.3 : -sgn*(0.30+ph*sgn*0.55));
     blit(SP.yetiArm,0,0);
     g.restore();
   }
-  const hy=y-45+bob-(roar?2:0);                 // head thrown back mid-roar
+  // sunk into the shoulders rather than perched on top of them, so it runs hunched
+  const hy=y-44+bob-(roar?2:0);                 // head thrown back mid-roar
   blit(rage>0.5?SP.yetiHeadRage:SP.yetiHead, x, hy);
   const my=hy-6;   // lines up with the muzzle band baked into the head art
   if(eat||roar){
     // eating chomps on a timer; the roar holds its jaw wide and shudders
     const gape=eat?(Math.floor(st.eatT*6)%2)*3:3+Math.round(Math.sin(st.t*30));
-    g.fillStyle='#101018'; g.fillRect(x-6,my,12,5+gape);
-    g.fillStyle='#a02020'; g.fillRect(x-4,my+2,8,2+gape);
-    g.fillStyle='#ffffff';
-    g.fillRect(x-6,my,2,2); g.fillRect(x+4,my,2,2);
-    g.fillRect(x-6,my+3+gape,2,2); g.fillRect(x+4,my+3+gape,2,2);
+    const h=6+gape;
+    g.fillStyle='#101018'; g.fillRect(x-7,my,14,h);          // the maw
+    g.fillStyle='#a02020'; g.fillRect(x-5,my+3,10,h-5);      // throat
+    g.fillStyle='#ffffff';                                   // and two rows of them, interlocking
+    fang(x-6,my,3,true);   fang(x-3,my,4,true);   fang(x+1,my,4,true);   fang(x+4,my,3,true);
+    fang(x-6,my+h-3,3,false); fang(x-2,my+h-4,4,false);
+    fang(x+2,my+h-4,4,false); fang(x+5,my+h-3,3,false);
   }else{
-    g.fillStyle='#4c5668'; g.fillRect(x-4,my+1,8,2);
+    // Not a shut mouth but a held snarl: the jaw hangs open on its teeth even at rest. A closed
+    // line for a mouth is most of what made this thing look pleased with itself.
+    g.fillStyle='#101018'; g.fillRect(x-6,my+1,12,5);
+    g.fillStyle='#7a1c1c'; g.fillRect(x-4,my+3,8,2);
+    g.fillStyle='#ffffff';
+    fang(x-5,my+1,3,true);  fang(x-1,my+1,3,true);  fang(x+3,my+1,3,true);
+    fang(x-4,my+4,2,false); fang(x+2,my+4,2,false);
   }
+}
+// One tooth: two pixels of gum tapering to a single-pixel point, hanging down from the upper jaw
+// or standing up from the lower one.
+function fang(fx,fy,h,down){
+  g.fillRect(fx, down?fy:fy+1, 2, h-1);
+  g.fillRect(fx, down?fy+h-1:fy, 1, 1);
 }
 
 function draw(){
